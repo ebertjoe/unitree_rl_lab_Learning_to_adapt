@@ -148,3 +148,52 @@ This repository is built upon the support and contributions of the following ope
 - [mujoco](https://github.com/google-deepmind/mujoco.git): Providing powerful simulation functionalities.
 - [robot_lab](https://github.com/fan-ziqi/robot_lab): Referenced for project structure and parts of the implementation.
 - [whole_body_tracking](https://github.com/HybridRobotics/whole_body_tracking): Versatile humanoid control framework for motion tracking.
+
+## Training & Evaluation
+
+### Training
+
+You can train a locomotion policy using the following command:
+
+```bash
+python scripts/rsl_rl/train.py \
+    --task Unitree-Go2-Velocity \
+    --run_name Stable_Gait_Start_n \
+    --max_iterations m \
+    --headless
+```
+
+- task Unitree-Go2-Velocity: specifies the training task (Go2 velocity tracking)
+- run_name Stable_Gait_Start_n: name of this training run
+n indicates this is the n-th experiment/run
+- max_iterations m: total number of training iterations
+means training for m iterations
+- headless: runs simulation without GUI (faster training)
+
+## Training Specific Gaits
+
+To train only a specific gait or a subset of gaits, you can modify the `gait_id` command configuration in:
+
+`velocity_env_cfg.py`
+
+### Configuration
+
+```python
+gait_id = mdp.UniformIntegerCommandCfg(
+    ......
+    params={
+        "range": (0, 1),   # change here
+        "asset_cfg": SceneEntityCfg("robot"), 
+    },
+)
+```
+
+### Evaluation
+To visualize a trained policy:
+```bash
+python scripts/rsl_rl/play.py \
+    --task Unitree-Go2-Velocity \
+    --run_name Stable_Gait_Start_n
+```
+- run_name Stable_Gait_Start_n: loads the trained model from the n-th run
+used to evaluate and visualize the trained gait performance
