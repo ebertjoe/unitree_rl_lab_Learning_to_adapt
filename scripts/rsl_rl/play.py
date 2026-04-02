@@ -197,7 +197,7 @@ def _default_hip_offsets_B(device, dtype):
             [0.19, 0.11, 0.0],   # FL
             [0.19, -0.11, 0.0],  # FR
             [-0.19, 0.11, 0.0],  # RL
-            [-0.19, -0.11, 0.0], # RR
+            [-0.19, -0.11, 0.0],  # RR
         ],
         device=device,
         dtype=dtype,
@@ -403,40 +403,21 @@ def main():
     yaw0 = _yaw_from_quat_wxyz(q0)
     print(f"[INIT] base_pos_w=({p0[0].item():.3f},{p0[1].item():.3f},{p0[2].item():.3f}) yaw={yaw0.item():.3f} rad")
 
-    # -------------------------
-    # simulate environment
-    # -------------------------
-    # 定义 key_map (使用 carb 的键码)
-    # 数字键 1-8 对应的 ASCII 码通常是 0x31-0x38
-    # 修改后的 key_map 映射
-    # 数字键 1-8 对应的常见十六进制偏移
-    # ki = carb.input.KeyboardInput
-    # key_map = {
-    #   ki.KEY_1 if hasattr(ki, 'KEY_1') else 0x31: 0,
-    #  ki.KEY_2 if hasattr(ki, 'KEY_2') else 0x32: 1,
-    #  ki.KEY_3 if hasattr(ki, 'KEY_3') else 0x33: 2,
-    #  ki.KEY_4 if hasattr(ki, 'KEY_4') else 0x34: 3,
-    # ki.KEY_5 if hasattr(ki, 'KEY_5') else 0x35: 4,
-    #  ki.KEY_6 if hasattr(ki, 'KEY_6') else 0x36: 5,
-    #  ki.KEY_7 if hasattr(ki, 'KEY_7') else 0x37: 6,
-    # ki.KEY_8 if hasattr(ki, 'KEY_8') else 0x38: 7,
-    # }
-
-    # --- [新增] UI Gait Controller 窗口 ---
+    # --- [NEW] UI Gait Controller ---
     gait_names = ["Bound (0)", "Trot (1)", "Run (2)", "Stand (3)", "Pronk (4)", "Limp (5)", "Amble (6)", "Hop (7)"]
     
-    # 创建 UI 窗口
+    # Create UI window
     _gait_window = ui.Window("Gait Controller", width=300, height=200)
     with _gait_window.frame:
         with ui.VStack(spacing=8, padding=10):
             ui.Label("Click to Switch Gait", alignment=ui.Alignment.CENTER, style={"font_size": 18, "color": 0xFF00FFFF})
             
             def on_ui_click(gait_id):
-                # 强制修改所有环境的指令值
+                # Force modification of command values ​​in all environments
                 env.unwrapped.command_manager._terms["gait_id"].value_command[:] = float(gait_id)
                 print(f"\033[93m[UI 切换] 已强制设置全场步态为: {gait_id} ({gait_names[gait_id]})\033[0m")
 
-            # 布局按钮（两列分布）
+            # Button layout (two columns)
             for i in range(0, 8, 2):
                 with ui.HStack(spacing=5):
                     ui.Button(gait_names[i], clicked_fn=lambda idx=i: on_ui_click(idx), height=40)
@@ -454,17 +435,17 @@ def main():
             obs, _, _, _ = env.step(actions)
             sim_step_count += 1
 
-            # --- 新增：获取并打印步态 ID ---
-            # 从 CommandManager 获取当前所有环境的 gait_id
+            # --- Added: Get and print gait ID ---
+            # Retrieve the gait_id of all current environments from CommandManager.
             gait_ids = env.unwrapped.command_manager.get_command("gait_id")
             
-            if sim_step_count % 100 == 0:   # 每100步打印一次
+            if sim_step_count % 100 == 0:   # Print once every 100 steps
                 unique_ids = torch.unique(gait_ids)
                 print("\033[93m当前所有 env 的 gait:", unique_ids.cpu().numpy(), "\033[0m")
            
             if sim_step_count % 50 == 0:
                 current_id = int(gait_ids[env_id].item())
-                # 步态名称映射（根据你的 GAIT_CONFIGS）
+                # Gait name mapping
                 gait_map = {
                     "0": "Bound", "1": "Trot", "2": "Run", "3": "Stand", 
                     "4": "Pronk", "5": "Limp", "6": "Amble", "7": "Hop"
@@ -502,11 +483,11 @@ def main():
             # Event-based βL verification + printing
             # -------------------------
             if event:
-                # 获取当前环境真实的 gait_id
+                # Get the real gait_id of the current environment
                 current_gait_id_idx = str(int(env.unwrapped.command_manager.get_command("gait_id")[env_id].item()))
                 current_cfg = gait_table[current_gait_id_idx]
         
-                # 动态赋值给验证逻辑
+                # Dynamically assign values ​​to the verification logic
                 raibert_period = current_cfg["period"]
                 raibert_threshold = current_cfg["threshold"]
                 raibert_kx = current_cfg["k"]
@@ -569,7 +550,6 @@ def main():
                 )
 
                 _printed_events += 1
-
 
                 # ------- p_ref log (yaw-only world) -------
                 base_pos_w = robot.data.root_pos_w[env_id]
@@ -728,7 +708,7 @@ def main():
         for xs, zs in swing_segments_xz[-10:]:
             plt.plot(xs, zs, linestyle="--")
             plt.scatter([xs[0]], [zs[0]], marker="o")   # liftoff
-            plt.scatter([xs[-1]], [zs[-1]], marker="x") # touchdown
+            plt.scatter([xs[-1]], [zs[-1]], marker="x")  # touchdown
         plt.xlabel("x (world)")
         plt.ylabel("z (world)")
         plt.title("Foot swing trajectories (world x-z)")

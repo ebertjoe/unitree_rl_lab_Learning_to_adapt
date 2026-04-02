@@ -31,7 +31,7 @@ def r_eta(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     use_dt_scaling: bool = False,
-    clamp_jerk: float | None = 5.0  # 建议给一个默认 clamp
+    clamp_jerk: float | None = 5.0 
 ) -> torch.Tensor:
     """Efficiency penalty (aligned with paper Eq. 6, with normalization)."""
     asset: Articulation = env.scene[asset_cfg.name]
@@ -40,7 +40,7 @@ def r_eta(
     qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]            
     qfrc = asset.data.applied_torque[:, asset_cfg.joint_ids]        
 
-    # 获取 Action
+    # get Action
     if hasattr(env, "action_manager") and hasattr(env.action_manager, "action"):
         q_star = env.action_manager.action
     else:
@@ -49,13 +49,13 @@ def r_eta(
     if q_star.shape[-1] != num_dof:
         q_star = q_star[:, asset_cfg.joint_ids]
 
-    # 初始化 Buffers
+    # Initialize Buffers
     if not hasattr(env, "_paper_eta_qvel_prev"):
         env._paper_eta_qvel_prev = qvel.clone()
         env._paper_eta_qvel_prev2 = qvel.clone()
         env._paper_eta_action_prev = q_star.clone()
 
-    # 处理 Resets
+    # Handling Resets
     if hasattr(env, "reset_buf"):
         ids = torch.where(env.reset_buf)[0]
         if len(ids) > 0:
@@ -63,29 +63,29 @@ def r_eta(
             env._paper_eta_qvel_prev2[ids] = qvel[ids]
             env._paper_eta_action_prev[ids] = q_star[ids]
 
-    # --- 计算分项 ---
+    # --- Calculate ---
 
-    # 1. Jerk: 使用 mean 而不是 sum，可以抵消自由度数量带来的数值放大
+    # 1. Jerk: Using mean instead of sum can offset the numerical amplification caused by the increase in degrees of freedom.
     jerk = qvel - 2.0 * env._paper_eta_qvel_prev + env._paper_eta_qvel_prev2
     if use_dt_scaling:
         dt = float(env.step_dt)
         jerk = jerk / (dt * dt)
     if clamp_jerk is not None:
         jerk = torch.clamp(jerk, -clamp_jerk, clamp_jerk)
-    # 使用 mean() 保证不论机器人有多少关节，数值量级都一致
+    # Using mean() ensures that the numerical magnitude remains consistent regardless of the number of joints in the robot.
     jerk_term = torch.mean(jerk * jerk, dim=-1)
 
-    # 2. Torque: 使用 mean()。这是防止 Raw 破千的关键
+    # 2. Torque: Using mean()
     tau_term = torch.mean(qfrc * qfrc, dim=-1)
 
-    # 3. Action rate: 动作差值
+    # 3. Action rate: Action difference
     dact = q_star - env._paper_eta_action_prev
     dact_term = torch.mean(dact * dact, dim=-1) 
 
-    # 论文公式的总和
+    # The sum of formulas in the paper
     total_eta = jerk_term + tau_term + dact_term
 
-    # --- 保留打印功能 ---
+    # --- debug ---
     if env.common_step_counter % 200 == 0:
         print("\n" + "-" * 30)
         print(f"[ETA DETAIL | Step {env.common_step_counter}]")
@@ -93,11 +93,10 @@ def r_eta(
         print(f"  - Torque (mean sq): {tau_term[0].item():.4f}")
         print(f"  - Action (mean sq): {dact_term[0].item():.4f}")
         print(f"  >> Total Raw:       {total_eta[0].item():.4f}")
-        # 这里假设权重是 -0.1，如果你依然用 -1.5，这个项依然会非常大
         print(f"  >> Weighted Score (*-0.1): {total_eta[0].item() * -0.1:.4f}")
         print("-" * 30)
 
-    # 更新 Buffers (使用 copy_ 性能更好，不产生新内存)
+    # Update Buffers
     env._paper_eta_qvel_prev2.copy_(env._paper_eta_qvel_prev)
     env._paper_eta_qvel_prev.copy_(qvel)
     env._paper_eta_action_prev.copy_(q_star)
@@ -130,7 +129,7 @@ def r_vcmd(
     err2 = torch.sum((v - v_cmd2) ** 2, dim=-1)            # ||v - vcmd||^2
     reward = psi(err2)
 
-    # 调试打印 (w_vcmd = 50.0)
+    # Debug Printing (w_vcmd = 50.0)
     if env.common_step_counter % 200 == 0:
         print(f"[REWARD VCMD] Raw: {reward[0].item():.4f} | Weighted (*50): {reward[0].item() * 50.0:.4f}")
 
@@ -150,7 +149,7 @@ def r_f(
     asset = env.scene[asset_cfg.name]
     contact_sensor = env.scene.sensors[sensor_cfg.name]
 
-    # 0) 只读缓存，不主动推进 beta 状态
+    # 0) Read-only cache, does not actively advance to beta state.
     if not hasattr(env, "beta_p_ref_rel_w") or not hasattr(env, "beta_contact_ref"):
         return torch.zeros(env.num_envs, device=env.device)
 
@@ -194,8 +193,7 @@ def r_f(
     sigma_z = 0.08
     pos_cost_z = 1.0 - torch.exp(-(pos_dist_z ** 2) / (2.0 * sigma_z ** 2))              # (N,4)
 
-    # combine XY + Z
-    # 先给 Z 更高一点权重，因为你当前主要问题就是“脚下不去”
+    # combine XY + Z with different weights (you can tune these)
     foot_cost = pos_cost_xy + 1.0 * pos_cost_z                                            # (N,4)
 
     p_cost = torch.where(
@@ -243,7 +241,7 @@ def r_stab(
     env: ManagerBasedRLEnv,
     sensor_cfg: SceneEntityCfg,
     desired_gravity_b: list[float] | torch.Tensor,
-    gait_table: dict,                # 新增：接收 GAIT_CONFIGS
+    gait_table: dict,
     gait_command_name: str = "gait_id",
     hip_joint_ids: list[int] = None,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -252,66 +250,66 @@ def r_stab(
     device = env.device
     
     # -------------------------
-    # A) 动态获取向量化步态参数
+    # A) Dynamically obtain vectorized gait parameters
     # -------------------------
-    # 1. 获取所有环境当前的 gait_id (N,)
+    # 1. Get the current gait_id (N,) for all environments
     gait_ids = env.command_manager.get_command(gait_command_name).long().flatten()
 
-    # 2. 确保 env 已经缓存了步态 Tensor (如果 beta_l 先运行，这里通常已存在)
+    # 2.  Ensure that the gait tensor is cached in the environment
     if not hasattr(env, "_gait_table_tensors"):
         keys = sorted([int(k) for k in gait_table.keys()])
         env._gait_znoms = torch.tensor([abs(gait_table[str(k)]["z_nom"]) for k in keys], device=device).float()
         env._gait_table_tensors = True
 
-    # 3. 提取当前所有环境对应的标称高度 (N,)
+    # 3. Extract the nominal height (N,) corresponding to all current environments
     z_nom_t = env._gait_znoms[gait_ids]
 
     # stance mask：LOGIC order [FR,FL,RR,RL]
     stance = env.beta_contact_ref.bool()  # (N,4)
 
-    # --- 用 articulation body_names 找 foot ids，保证顺序也是 [FR,FL,RR,RL] ---
+    # --- use articulation body_names to find foot ids，make sure [FR,FL,RR,RL] ---
     logic_leg_names = ["FR", "FL", "RR", "RL"]
     if not hasattr(env, "_rstab_foot_body_ids"):
         name_to_body_id = {n: i for i, n in enumerate(asset.data.body_names)}
         env._rstab_foot_body_ids = [name_to_body_id[f"{leg}_foot"] for leg in logic_leg_names]
     foot_body_ids = env._rstab_foot_body_ids
 
-    # 1) 获取水平速度 (XY) - LOGIC order
+    # 1) Get horizontal speed (XY) - LOGIC order
     foot_vel_xy = asset.data.body_lin_vel_w[:, foot_body_ids, :2]  # (N,4,2)
 
-    # 2) 速度平方
+    # 2) velocity squared
     slip_each = torch.sum(foot_vel_xy * foot_vel_xy, dim=-1)  # (N,4)
 
-    # 3) 只惩罚期望 stance 的脚（LOGIC order对齐）
+    # 3) Only penalize feet in the expected stance (LOGIC order aligned)
     slip_term = torch.sum(slip_each * stance.float(), dim=-1) * 2.0
 
-    # 角速度 roll/pitch
+    # angular velocity: roll/pitch
     omega_xy = asset.data.root_ang_vel_b[:, :2]
     omega_term = torch.sum(omega_xy * omega_xy, dim=-1)
 
-    # desired_gravity_b：cfg 里是 list，需要变成 (N,3) tensor
+    # desired_gravity_b
     if not isinstance(desired_gravity_b, torch.Tensor):
         desired_gravity_b = torch.tensor(desired_gravity_b, device=env.device, dtype=asset.data.projected_gravity_b.dtype)
     desired_gravity_b = desired_gravity_b.view(1, 3).repeat(env.num_envs, 1)  # (N,3)
 
-    # 姿态项
+    # Posture Item
     alphaR_B = asset.data.projected_gravity_b
     orient_err2 = torch.sum((alphaR_B - desired_gravity_b) ** 2, dim=-1)
     # orient_term = psi(orient_err2)
     orient_term = 1.0 - psi(orient_err2)
 
-    # 高度项
+    # height item
     zB = asset.data.root_pos_w[:, 2]
     height_term = 1 - psi((zB - z_nom_t) ** 2)
 
-    # 髋关节项
+    # Hip joint
     qhip = asset.data.joint_pos[:, hip_joint_ids]
     hip_term = torch.sum(qhip * qhip, dim=-1)
 
-    # 综合返回
+    # return
     total_stab_error = slip_term + omega_term + orient_term + height_term + hip_term
 
-    # 调试打印 (w_stab = -1.0)
+    # debug (w_stab = -1.0)
     if env.common_step_counter % 200 == 0:
         print(f"[STAB DETAIL | Step {env.common_step_counter}]")
         print(f"  1. Slip (足端滑行): {slip_term[0].item():.4f}")
@@ -321,7 +319,6 @@ def r_stab(
         print(f"  5. Hip (髋关节):   {hip_term[0].item():.4f}")
         print(f"  >> Total Raw Error: {total_stab_error[0].item():.4f}")
         print(f"  >> Weighted Score (*-1.0): {total_stab_error[0].item() * -1.0:.4f}")
-        # 额外打印高度，确认 zB 是否正常
         print(f"      -> Detail: zB={zB[0].item():.3f}, Height_Err={height_term[0].item():.3f}, Orient_Err={orient_term[0].item():.3f}")
 
     return total_stab_error

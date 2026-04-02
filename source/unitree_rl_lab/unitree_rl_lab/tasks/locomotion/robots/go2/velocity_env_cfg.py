@@ -243,7 +243,7 @@ class CommandsCfg:
         num_commands=1,
         resampling_time_range=(8.0, 10.0),
         params={
-            "range": (0, 1),  # 0, 1, 2, 3, 4, 5, 6, 7 共8种 gait
+            "range": (0, 1),  # 0, 1, 2, 3, 4, 5, 6, 7 There are 8 types of gait
             "asset_cfg": SceneEntityCfg("robot"), 
         },
     )
@@ -254,7 +254,7 @@ class ActionsCfg:
     """Action specifications for the MDP."""
     JointPositionAction = mdp.JointPositionActionCfg(
         asset_name="robot", 
-        # 显式列出这12个名字，确保神经网络输出的第0维永远对应 FR_hip_joint
+        # Explicitly list these 12 names to ensure the neural network output's first dimension always corresponds to FR_hip_joint
         joint_names=[
             "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
             "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
@@ -283,7 +283,7 @@ def _quat_wxyz_to_rotmat(q: torch.Tensor) -> torch.Tensor:
     return R
 
 
-# --- 观测配置类的定义 ---
+# --- Definition of observation configuration class ---
 @configclass
 class ObservationsCfg:
     """Observation specifications for the MDP."""
@@ -301,7 +301,7 @@ class ObservationsCfg:
         #     },
         # )
 
-        # 2. 修改 state_s，把 gait_id 作为观测喂给网络
+        # 2. Modify state_s
         state_s = ObsTerm(
             func=mdp.robot_state_s,
             params={
@@ -319,7 +319,7 @@ class ObservationsCfg:
             clip=(-100, 100)
         )
 
-        # 3. velocity_commands 保持不变
+        # 3. velocity_commands remain unchanged
         # velocity_commands = ObsTerm(
         #     func=mdp.generated_commands, 
         #     params={"command_name": "base_velocity"},
@@ -330,7 +330,7 @@ class ObservationsCfg:
             self.enable_corruption = True
             self.concatenate_terms = True
 
-    # 实例化组，注意 policy 组内的观测项已经定义好了
+    # Instantiate the group
     policy: PolicyCfg = PolicyCfg()
 
     @configclass
@@ -361,7 +361,7 @@ class ObservationsCfg:
 
 
 def alive_bonus_func(env):
-    """只要活着就给分。"""
+    """Points are awarded as long as the person is alive"""
     return torch.ones(env.num_envs, device=env.device)
 
 
@@ -372,7 +372,7 @@ class RewardsCfg:
         func=mdp.r_eta,
         weight=-0.1,
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),  # 或 joint_names=".*"
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
             "use_dt_scaling": False,
             "clamp_jerk": None,
         },
@@ -410,17 +410,17 @@ class RewardsCfg:
                 "contact_forces",
                 body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
             ),
-            "hip_joint_ids": [1, 0, 3, 2],  # Go2 的 Hip 关节索引
-            # "z_nom": abs(GAIT_CONFIGS[CURRENT_GAIT_ID]["z_nom"]),  # 标称高度
-            # 动态获取剧本表，让 r_stab 内部去取值
+            "hip_joint_ids": [1, 0, 3, 2],  # Hip joint index in Go2
+            # "z_nom": abs(GAIT_CONFIGS[CURRENT_GAIT_ID]["z_nom"]),
+            # Dynamically retrieve the script table and let r_stab retrieve its values.
             "gait_table": GAIT_CONFIGS, 
-            # "gait_id": CURRENT_GAIT_ID,  # 自动同步
+            # "gait_id": CURRENT_GAIT_ID,
             "gait_command_name": "gait_id",
-            "desired_gravity_b": [0.0, 0.0, -1.0],  # 补充：期望重力方向
+            "desired_gravity_b": [0.0, 0.0, -1.0],
         },
     )
 
-    # 在 rewards.py 或配置中增加一个简单项
+    # Add a simple item to rewards.py or the configuration file.
     alive_bonus = RewTerm(
         func=alive_bonus_func,
         weight=2.0
@@ -498,7 +498,7 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         self.scene.terrain.terrain_generator.num_rows = 2
         self.scene.terrain.terrain_generator.num_cols = 1
         
-        # 不用 limit_ranges 覆盖 ranges
+        # Do not use limit_ranges to override ranges
         # self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
 
         self.commands.base_velocity.resampling_time_range = (9999.0, 9999.0)
