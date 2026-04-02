@@ -26,187 +26,279 @@ def beta_l_raibert(
     gait_command_name: str = "gait_id",
     command_name: str = "base_velocity",
 ) -> torch.Tensor:
+    # -------------------------
+    # 每个仿真 step 只真正更新一次
+    # -------------------------
+    cur_step = int(env.common_step_counter)
+    if (
+        hasattr(env, "_beta_last_step")
+        and env._beta_last_step == cur_step
+        and hasattr(env, "_beta_last_value")
+    ):
+        return env._beta_last_value
+
     device = env.device
     num_envs = env.num_envs
     num_legs = 4
     robot = env.scene["robot"]
 
-    # 1. 获取所有环境当前的 gait_id (N,)
-    gait_ids = env.command_manager.get_command(gait_command_name).long().flatten()
+    # 1) commands
+    gait_ids = env.command_manager.get_command(gait_command_name).long().flatten()   # (N,)
+    v_cmd = env.command_manager.get_command(command_name)                             # (N,3) [vx, vy, wz]
 
-    # 2. 将 gait_table 缓存为 Tensor (只需转换一次)
+    # 2) cache gait table
     if not hasattr(env, "_gait_table_tensors"):
         keys = sorted([int(k) for k in gait_table.keys()])
-        env._gait_periods = torch.tensor([gait_table[str(k)]["period"] for k in keys], device=device).float()
-        env._gait_thresholds = torch.tensor([gait_table[str(k)]["threshold"] for k in keys], device=device).float()
-        env._gait_offsets = torch.tensor([gait_table[str(k)]["offset"] for k in keys], device=device).float()  # (NumGaits, 4)
-        env._gait_ks = torch.tensor([gait_table[str(k)]["k"] for k in keys], device=device).float()
-        env._gait_znoms = torch.tensor([gait_table[str(k)]["z_nom"] for k in keys], device=device).float()
-        env._gait_xlims = torch.tensor([gait_table[str(k)]["x_lim"] for k in keys], device=device).float()
-        env._gait_ylims = torch.tensor([gait_table[str(k)]["y_lim"] for k in keys], device=device).float()
+        env._gait_periods = torch.tensor(
+            [gait_table[str(k)]["period"] for k in keys], device=device
+        ).float()
+        env._gait_thresholds = torch.tensor(
+            [gait_table[str(k)]["threshold"] for k in keys], device=device
+        ).float()
+        env._gait_offsets = torch.tensor(
+            [gait_table[str(k)]["offset"] for k in keys], device=device
+        ).float()  # (G,4)
+        env._gait_ks = torch.tensor(
+            [gait_table[str(k)]["k"] for k in keys], device=device
+        ).float()
+        env._gait_znoms = torch.tensor(
+            [gait_table[str(k)]["z_nom"] for k in keys], device=device
+        ).float()
+        env._gait_xlims = torch.tensor(
+            [gait_table[str(k)]["x_lim"] for k in keys], device=device
+        ).float()
+        env._gait_ylims = torch.tensor(
+            [gait_table[str(k)]["y_lim"] for k in keys], device=device
+        ).float()
+
+        env._prev_gait_ids = gait_ids.clone()
+        env._phase_compensation = torch.zeros((num_envs, 1), device=device)
+        env._current_period_blended = env._gait_periods[gait_ids].unsqueeze(1)
+        env._current_znoms_blended = env._gait_znoms[gait_ids].unsqueeze(1)
         env._gait_table_tensors = True
 
-    # 3. 批量提取当前环境对应的参数
-    # 使用 (N, 1) 以便在 (N, 4) 维度上正确广播
-    period = env._gait_periods[gait_ids].unsqueeze(1)      # (N, 1)
-    threshold = env._gait_thresholds[gait_ids].unsqueeze(1)  # (N, 1)
-    offset = env._gait_offsets[gait_ids]                    # (N, 4)
-    kx = ky = env._gait_ks[gait_ids].unsqueeze(1)           # (N, 1)
-    z_nominal = env._gait_znoms[gait_ids].unsqueeze(1)      # (N, 1)
-    x_limit = env._gait_xlims[gait_ids].unsqueeze(1)        # (N, 1)
-    y_limit = env._gait_ylims[gait_ids].unsqueeze(1)        # (N, 1)
+    # 3) target gait params
+    target_period = env._gait_periods[gait_ids].unsqueeze(1)       # (N,1)
+    threshold = env._gait_thresholds[gait_ids].unsqueeze(1)        # (N,1)
+    offset = env._gait_offsets[gait_ids]                           # (N,4)
+    kx = ky = env._gait_ks[gait_ids].unsqueeze(1)                  # (N,1)
+    z_nominal_target = env._gait_znoms[gait_ids].unsqueeze(1)      # (N,1)
+    x_limit = env._gait_xlims[gait_ids].unsqueeze(1)               # (N,1)
+    y_limit = env._gait_ylims[gait_ids].unsqueeze(1)               # (N,1)
 
-    # 1) 获取步数统计
-    episode_length_buf = getattr(env, "episode_length_buf", env.episode_length if hasattr(env, "episode_length") else None)
-    if episode_length_buf is None:
-        raise AttributeError("无法从 env 获取步数统计，请确认环境类继承自 ManagerBasedRLEnv")
-    # -------------------------
-    # 2) 计算相位与步态周期
-    # -------------------------
-    t_exec = episode_length_buf.unsqueeze(1) * env.step_dt  # (N,1)
-    global_phase = (t_exec % period) / period  # (N,1) 每个环境的全局相位，范围 [0,1)
+    # 4) smooth transition of period / z_nom
+    blend_alpha = 0.1
+    env._current_period_blended = (
+        blend_alpha * target_period + (1.0 - blend_alpha) * env._current_period_blended
+    )
+    env._current_znoms_blended = (
+        blend_alpha * z_nominal_target + (1.0 - blend_alpha) * env._current_znoms_blended
+    )
 
-    # off = torch.tensor(offset, device=device, dtype=torch.float32).view(1, num_legs)  # (1,4)
-    # leg_phase = (global_phase + off) % 1.0  # (N,4)
-    leg_phase = (global_phase + offset) % 1.0  # (N,4) 每条腿的相位都加上对应的偏移，形成独立的周期
+    period = env._current_period_blended
+    z_nominal = env._current_znoms_blended
 
-    # stance if leg_phase < threshold
-    c_ref = (leg_phase < threshold).to(torch.float32)  # (N,4)
-
-    # R_WB: World-from-Body rotation matrix
-    quat_WB = robot.data.root_quat_w
-    R_WB = quat_wxyz_to_rotmat(quat_WB)      # (N,3,3)
-
-    # -------------------------
-    # 3) cache: prev contact + stored landing refs
-    # -------------------------
+    # 5) body ids / rotation
     logic_leg_names = ["FR", "FL", "RR", "RL"]
-
-    # 用 body_names 建映射（不要写死 16/15/18/17）
     if not hasattr(env, "_name_to_body_id"):
         env._name_to_body_id = {n: i for i, n in enumerate(robot.data.body_names)}
-    name_to_body_id = env._name_to_body_id
 
-    foot_body_ids = [name_to_body_id[f"{leg}_foot"] for leg in logic_leg_names]
-    hip_body_ids = [name_to_body_id[f"{leg}_hip"] for leg in logic_leg_names]
+    quat_WB = robot.data.root_quat_w
+    R_WB = quat_wxyz_to_rotmat(quat_WB)                  # body -> world (full)
+    R_WB_yaw = quat_wxyz_to_yaw_rotmat(quat_WB)         # body -> world (yaw only)
 
-    if not hasattr(env, "_raibert_prev_c"):
-        env._raibert_prev_c = c_ref.clone()
-
-    # 初始化 hip_static / p_ref（第一次进入时）
+    # 6) init static hip + ref cache
     if not hasattr(env, "_raibert_hip_pos_B_static"):
-        hip_pos_w = robot.data.body_pos_w[:, hip_body_ids, :]          # (N,4,3)
-        root_pos_w = robot.data.root_pos_w.unsqueeze(1)                # (N,1,3)
-        hip_pos_B = torch.bmm(R_WB.transpose(1, 2), (hip_pos_w - root_pos_w).transpose(1, 2)).transpose(1, 2)
+        hip_pos_B_single = get_go2_hip_positions_B(
+            device=device,
+            dtype=robot.data.root_pos_w.dtype,
+        )  # (4,3)
+
+        hip_pos_B = hip_pos_B_single.unsqueeze(0).repeat(num_envs, 1, 1)  # (N,4,3)
+
         env._raibert_hip_pos_B_static = hip_pos_B.clone()
-        env._raibert_p_ref_B = torch.zeros((num_envs, 4, 3), device=device)
+        env._raibert_p_ref_B = hip_pos_B.clone()
+        env._raibert_p_ref_B[..., 2] = z_nominal.expand(-1, 4)
 
-        env._raibert_p_ref_B[..., 2] = z_nominal.expand(-1, 4)  # (N,4,3) 初始时脚点参考位置就在髋部正下方，z 方向是标称高度
-
-    # 取静态 Hip 基准
-    hip = env._raibert_hip_pos_B_static  # (N,4,3)
-
-    # reset 时：同步更新 hip_static + p_ref（只更新 reset env）
+    # 7) reset handling
     if hasattr(env, "reset_buf"):
         reset_ids = torch.where(env.reset_buf)[0]
         if reset_ids.numel() > 0:
-            # 更新 hip_static（避免上一回合残留）
-            hip_pos_w_res = robot.data.body_pos_w[reset_ids][:, hip_body_ids, :]
-            root_pos_w_res = robot.data.root_pos_w[reset_ids].unsqueeze(1)
-            hip_pos_B_res = torch.bmm(R_WB[reset_ids].transpose(1, 2), (hip_pos_w_res - root_pos_w_res).transpose(1, 2)).transpose(1, 2)
-            env._raibert_hip_pos_B_static[reset_ids] = hip_pos_B_res
+            hip_pos_B_single = get_go2_hip_positions_B(
+                device=device,
+                dtype=robot.data.root_pos_w.dtype,
+            )
 
-            # p_ref 用“当前真实脚点(转到B) + 固定z_nominal”初始化
-            foot_pos_w_res = robot.data.body_pos_w[reset_ids][:, foot_body_ids, :]
-            p_rel_w_res = foot_pos_w_res - root_pos_w_res
-            p_ref_B_res = torch.bmm(R_WB[reset_ids].transpose(1, 2), p_rel_w_res.transpose(1, 2)).transpose(1, 2)
-            p_ref_B_res[..., 2] = z_nominal[reset_ids].expand(-1, 4)  # 修正这里，确保 reset 时脚点参考高度正确
+            hip_pos_B = hip_pos_B_single.unsqueeze(0).repeat(reset_ids.numel(), 1, 1)
 
-            # prev_c 也重置一下更稳（避免 liftoff 误触发）
-            env._raibert_prev_c[reset_ids] = c_ref[reset_ids]
-            env._raibert_p_ref_B[reset_ids] = p_ref_B_res
+            env._raibert_hip_pos_B_static[reset_ids] = hip_pos_B
+            env._raibert_p_ref_B[reset_ids] = hip_pos_B
+            env._raibert_p_ref_B[reset_ids, :, 2] = z_nominal[reset_ids].expand(-1, 4)
 
-    # -------------------------
-    # 4) base velocity (world->body) + cmd velocity
-    # -------------------------
+            if hasattr(env, "_raibert_prev_c"):
+                env._raibert_prev_c[reset_ids] = 1.0
 
-    v_W = robot.data.root_lin_vel_w          # (N,3)
-    v_B = torch.bmm(R_WB.transpose(1, 2), v_W.unsqueeze(-1)).squeeze(-1)  # (N,3)
+    # 8) phase continuity
+    episode_length_buf = getattr(
+        env,
+        "episode_length_buf",
+        env.episode_length if hasattr(env, "episode_length") else None,
+    )
+    if episode_length_buf is None:
+        raise AttributeError("env missing episode_length_buf")
 
-    vxN, vyN = v_B[:, 0:1], v_B[:, 1:2]
+    t_exec = episode_length_buf.unsqueeze(1) * env.step_dt  # (N,1)
 
-    cmd = env.command_manager.get_command(command_name)  # (N, C)
-    vcmd_xN, vcmd_yN = cmd[:, 0:1], cmd[:, 1:2]
+    gait_changed = (gait_ids != env._prev_gait_ids).unsqueeze(1)
+    if gait_changed.any():
+        old_period = env._gait_periods[env._prev_gait_ids].unsqueeze(1)
+        new_comp = t_exec - (t_exec - env._phase_compensation) * (period / old_period)
+        env._phase_compensation = torch.where(gait_changed, new_comp, env._phase_compensation)
 
-    # 5) Raibert 启发式计算
+    env._prev_gait_ids = gait_ids.clone()
+
+    global_phase = ((t_exec - env._phase_compensation) % period) / period   # (N,1)
+    leg_phase = (global_phase + offset) % 1.0                               # (N,4)
+    c_ref = (leg_phase < threshold).float()                                 # (N,4)
+
+    # 9) body velocities
+    # 改回 full rotation，先做对照实验
+    v_B = torch.bmm(
+        R_WB.transpose(1, 2),
+        robot.data.root_lin_vel_w.unsqueeze(-1)
+    ).squeeze(-1)                                                           # (N,3)
+
+    yaw_vel = robot.data.root_ang_vel_b[:, 2:3]                             # (N,1)
+
+    # 10) hip base
+    hip_base = env._raibert_hip_pos_B_static.clone()                        # (N,4,3)
+    is_bound_1d = (gait_ids == 0)                                           # (N,)
+
+    # 11) Raibert foot placement
+    twist_x = torch.zeros_like(v_B[:, 0:1])
+    twist_y = torch.zeros_like(v_B[:, 0:1])
+
     Tst = threshold * period
-    Tswing = (1.0 - threshold) * period
+    dx4 = 0.5 * Tst * v_B[:, 0:1] + kx * (v_B[:, 0:1] - v_cmd[:, 0:1]) + twist_x
+    dy4 = 0.5 * Tst * v_B[:, 1:2] + ky * (v_B[:, 1:2] - v_cmd[:, 1:2]) - twist_y
 
-    # swing phase in [0, 1], only meaningful during swing (leg_phase >= threshold)
-    # leg_phase: (N,4) in [0,1)
-    swing_phase = (leg_phase - threshold) / (1.0 - threshold)
-    swing_phase = torch.clamp(swing_phase, 0.0, 1.0)   # (N,4)
-
-    # textbook-like Raibert:
-    # p_ref = p_hip + (1-phi)*Tswing*v + 0.5*Tst*v + K*(v-v_cmd)
-    dx4 = (1.0 - swing_phase) * Tswing * vxN + 0.5 * Tst * vxN + kx * (vxN - vcmd_xN)  # (N,4)
-    dy4 = (1.0 - swing_phase) * Tswing * vyN + 0.5 * Tst * vyN + ky * (vyN - vcmd_yN)  # (N,4)
-    # dx4 = 0.5 * Tst * vxN + kx * (vxN - vcmd_xN)
-    # dy4 = 0.5 * Tst * vyN + ky * (vyN - vcmd_yN)
-
-    new_p = hip.clone()
+    new_p = hip_base.clone()
     new_p[..., 0] += dx4
     new_p[..., 1] += dy4
     new_p[..., 2] = z_nominal.expand(-1, 4)
 
-    # clamp around hip
-    # new_p[..., 0] = torch.clamp(new_p[..., 0], hip[..., 0] + x_min, hip[..., 0] + x_max)
-    # new_p[..., 1] = torch.clamp(new_p[..., 1], hip[..., 1] + y_min, hip[..., 1] + y_max)
-    new_p[..., 0] = torch.clamp(new_p[..., 0], hip[..., 0] - x_limit, hip[..., 0] + x_limit)
-    new_p[..., 1] = torch.clamp(new_p[..., 1], hip[..., 1] - y_limit, hip[..., 1] + y_limit)
+    # 12) clamp around hip_base
+    new_p[..., 0] = torch.clamp(
+        new_p[..., 0],
+        hip_base[..., 0] - x_limit,
+        hip_base[..., 0] + x_limit,
+    )
+    new_p[..., 1] = torch.clamp(
+        new_p[..., 1],
+        hip_base[..., 1] - y_limit,
+        hip_base[..., 1] + y_limit,
+    )
 
-    # 仅在离地瞬间更新
-    liftoff = (env._raibert_prev_c > 0.5) & (c_ref < 0.5)
-    env._raibert_p_ref_B = torch.where(liftoff.unsqueeze(-1), new_p, env._raibert_p_ref_B)
+    # 13) Bound-specific geometry constraint
+    # if is_bound_1d.any():
+    #     # 用当前 dx4，但限制后腿不能比前腿更前
+    #     front_dx = dx4[is_bound_1d, 0]
+    #     rear_dx = dx4[is_bound_1d, 0]
+
+    #     # 几何约束：后腿前移量 <= 前腿前移量
+    #     rear_dx = torch.minimum(rear_dx, front_dx)
+
+    #     # 前腿
+    #     new_p[is_bound_1d, 0, 0] = hip_base[is_bound_1d, 0, 0] + front_dx
+    #     new_p[is_bound_1d, 1, 0] = hip_base[is_bound_1d, 1, 0] + front_dx
+
+    #     # 后腿
+    #     new_p[is_bound_1d, 2, 0] = hip_base[is_bound_1d, 2, 0] + rear_dx
+    #     new_p[is_bound_1d, 3, 0] = hip_base[is_bound_1d, 3, 0] + rear_dx
+
+    #     # y 保持左右对称
+    #     new_p[is_bound_1d, 0, 1] = hip_base[is_bound_1d, 0, 1] + dy4[is_bound_1d, 0]
+    #     new_p[is_bound_1d, 1, 1] = hip_base[is_bound_1d, 1, 1] + dy4[is_bound_1d, 0]
+    #     new_p[is_bound_1d, 2, 1] = hip_base[is_bound_1d, 2, 1] + dy4[is_bound_1d, 0]
+    #     new_p[is_bound_1d, 3, 1] = hip_base[is_bound_1d, 3, 1] + dy4[is_bound_1d, 0]
+
+    # 14) liftoff detection
+    if not hasattr(env, "_raibert_prev_c"):
+        env._raibert_prev_c = c_ref.clone()
+
+    prev_c = env._raibert_prev_c
+    liftoff = (prev_c > 0.5) & (c_ref < 0.5)
+
+    # Bound: pair liftoff
+    if is_bound_1d.any():
+        front_liftoff = (
+            ((prev_c[:, 0] > 0.5) | (prev_c[:, 1] > 0.5))
+            & ((c_ref[:, 0] < 0.5) & (c_ref[:, 1] < 0.5))
+        )
+        rear_liftoff = (
+            ((prev_c[:, 2] > 0.5) | (prev_c[:, 3] > 0.5))
+            & ((c_ref[:, 2] < 0.5) & (c_ref[:, 3] < 0.5))
+        )
+
+        liftoff[is_bound_1d, 0] = front_liftoff[is_bound_1d]
+        liftoff[is_bound_1d, 1] = front_liftoff[is_bound_1d]
+        liftoff[is_bound_1d, 2] = rear_liftoff[is_bound_1d]
+        liftoff[is_bound_1d, 3] = rear_liftoff[is_bound_1d]
+
+    env._raibert_p_ref_B = torch.where(
+        liftoff.unsqueeze(-1),
+        new_p,
+        env._raibert_p_ref_B,
+    )
     env._raibert_prev_c = c_ref.clone()
 
-    # 7) 叠加摆动高度（严格跟 swing/stance 对齐）
-    swing_phase = (leg_phase - threshold) / (1.0 - threshold)
-    swing_phase = torch.clamp(swing_phase, 0.0, 1.0)  # (N,4)
-    swing_mask = (leg_phase >= threshold).float()
+    # 15) swing uses locked target, stance uses dynamic target
+    # stance_mask = (c_ref > 0.5).unsqueeze(-1)
+    # p_ref_B_final = torch.where(
+    #     stance_mask,
+    #     new_p,                   # stance: dynamic support reference
+    #     env._raibert_p_ref_B,    # swing: locked target
+    # )
+    p_ref_B_final = env._raibert_p_ref_B.clone()
 
-    z_swing = 0.10 * swing_mask * torch.sin(torch.pi * swing_phase)  # 0->1->0, only in swing
+    # 16) swing height
+    swing_mask = (c_ref < 0.5).float()
+    x = torch.clamp((leg_phase - threshold) / (1.0 - threshold), 0.0, 1.0)
+    step_height = 0.10
+    # z_swing = step_height * torch.sin(torch.pi * x) * swing_mask
+    z_swing = 0.5 * step_height * (1.0 - torch.cos(2.0 * torch.pi * x)) * swing_mask
+    p_ref_B_final[..., 2] = z_nominal.expand(-1, 4) + z_swing
 
-    p_ref_B_dynamic = env._raibert_p_ref_B.clone()
-    p_ref_B_dynamic[..., 2] = z_nominal + z_swing  # (N,4,3) 这是动态的脚点参考位置，包含了 Raibert 调整和摆动高度
-    # -------------------------
-    # 8) 转换到世界坐标系 (计算奖励用)
-    # -------------------------
-    # 使用完整的旋转矩阵将 Body 系参考投影到 World 系方向
-    p_ref_rel_w = torch.bmm(R_WB, p_ref_B_dynamic.transpose(1, 2)).transpose(1, 2)
-    
-    # 供奖励函数使用的绝对世界坐标
+    # 17) to world
+    # 改回 full rotation，先做对照实验
+    p_ref_rel_w = torch.bmm(
+        R_WB,
+        p_ref_B_final.transpose(1, 2)
+    ).transpose(1, 2)                                                      # (N,4,3)
+
     p_ref_W = robot.data.root_pos_w.unsqueeze(1) + p_ref_rel_w
 
-    # -------------------------
-    # 9) 缓存与返回
-    # -------------------------
+    # 18) cache for rewards / debug
     env.beta_contact_ref = (c_ref > 0.5)
-    env.beta_foot_pos_ref_w = p_ref_W  # 供 r_f 使用
-    
-    # 将相对于质心的位移存入 env，这在计算奖励时比绝对坐标更稳定
-    env.beta_p_ref_rel_w = p_ref_rel_w 
+    env.beta_foot_pos_ref_w = p_ref_W
+    env.beta_p_ref_rel_w = p_ref_rel_w
 
-    # 关键修改：返回给神经网络的坐标是“相对”的,输入值永远在 [-1, 1] 左右
+    env.beta_p_ref_B = p_ref_B_final.clone()
+    env.beta_hip_base_B = hip_base.clone()
+
     beta = torch.zeros((num_envs, num_legs, 4), device=device)
     beta[..., 0] = c_ref
-    beta[..., 1:] = p_ref_rel_w  # 改成相对位移
+    beta[..., 1:] = p_ref_rel_w
+    beta = beta.view(num_envs, -1)
 
-    return beta.view(num_envs, -1)
+    # step cache
+    env._beta_last_step = cur_step
+    env._beta_last_value = beta
+    return beta
 
 
 def quat_wxyz_to_rotmat(q: torch.Tensor) -> torch.Tensor:
-    """Quaternion (w,x,y,z) -> rotation matrix R_WB."""
+    """Quaternion (w,x,y,z) -> full rotation matrix R_WB."""
     w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
     N = q.shape[0]
     R = torch.zeros((N, 3, 3), device=q.device, dtype=q.dtype)
@@ -225,217 +317,359 @@ def quat_wxyz_to_rotmat(q: torch.Tensor) -> torch.Tensor:
     return R
 
 
+def quat_wxyz_to_yaw_rotmat(q: torch.Tensor) -> torch.Tensor:
+    """
+    Quaternion (w,x,y,z) -> yaw-only rotation matrix.
+    只保留绕 z 轴的旋转，去掉 roll/pitch 对脚点参考的影响。
+    """
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+
+    yaw = torch.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z)
+    )  # (N,)
+
+    cy = torch.cos(yaw)
+    sy = torch.sin(yaw)
+
+    N = q.shape[0]
+    R = torch.zeros((N, 3, 3), device=q.device, dtype=q.dtype)
+
+    R[:, 0, 0] = cy
+    R[:, 0, 1] = -sy
+    R[:, 0, 2] = 0.0
+
+    R[:, 1, 0] = sy
+    R[:, 1, 1] = cy
+    R[:, 1, 2] = 0.0
+
+    R[:, 2, 0] = 0.0
+    R[:, 2, 1] = 0.0
+    R[:, 2, 2] = 1.0
+
+    return R
+
+
+def get_go2_hip_positions_B(device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """固定的髋关节参考位置（Body frame），顺序: FR, FL, RR, RL."""
+    return torch.tensor(
+        [
+            [ 0.183, -0.122, 0.0],   # FR
+            [ 0.183,  0.122, 0.0],   # FL
+            [-0.183, -0.122, 0.0],   # RR
+            [-0.183,  0.122, 0.0],   # RL
+        ],
+        device=device,
+        dtype=dtype,
+    )
+
+
 def robot_state_s(
-    env: ManagerBasedRLEnv, 
-    sensor_cfg: SceneEntityCfg, 
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     gait_command_name: str = "gait_id",
+    gait_table: dict | None = None,
 ) -> torch.Tensor:
     robot = env.scene[asset_cfg.name]
-    
-    # 强制定义关节的逻辑顺序
+
     logic_joint_names = [
         "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
         "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
         "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint",
-        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint"
+        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
     ]
+    logic_leg_names = ["FR", "FL", "RR", "RL"]
 
-    # 重新排序 asset_cfg.joint_ids 以匹配逻辑顺序
+    # =========================================================
+    # 1) joint ids: 强制重排成逻辑顺序 [FR, FL, RR, RL]
+    # =========================================================
     name_to_joint_id = {n: i for i, n in enumerate(robot.data.joint_names)}
     asset_cfg.joint_ids = [name_to_joint_id[n] for n in logic_joint_names]
 
-    # =========================
-    # 2) 关节状态 (12)
-    # =========================
-    joint_pos = robot.data.joint_pos[:, asset_cfg.joint_ids]              # (N,12)
-    joint_vel = robot.data.joint_vel[:, asset_cfg.joint_ids]              # (N,12)
-    joint_torques = robot.data.applied_torque[:, asset_cfg.joint_ids]      # (N,12)
+    # joint states
+    joint_pos = robot.data.joint_pos[:, asset_cfg.joint_ids]          # (N,12)
+    joint_vel = robot.data.joint_vel[:, asset_cfg.joint_ids]          # (N,12)
+    joint_torques = robot.data.applied_torque[:, asset_cfg.joint_ids] # (N,12)
 
-    # =========================
-    # 3) 基础观测
-    # =========================
-    projected_gravity = robot.data.projected_gravity_b                     # (N,3)
-    ang_vel = robot.data.root_ang_vel_b                                    # (N,3)
-    lin_vel = robot.data.root_lin_vel_b                                    # (N,3)
-    base_height = robot.data.root_pos_w[:, 2:3]                            # (N,1)
+    # base states
+    projected_gravity = robot.data.projected_gravity_b                # (N,3)
+    ang_vel = robot.data.root_ang_vel_b                               # (N,3)
+    lin_vel = robot.data.root_lin_vel_b                               # (N,3)
+    base_height = robot.data.root_pos_w[:, 2:3]                       # (N,1)
 
-    # =========================
-    # 4) Body/Foot/Hip 索引（用 body_names 自动查，不写死 15/16/17/18）
-    # =========================
-    logic_leg_names = ["FR", "FL", "RR", "RL"]
+    # =========================================================
+    # 2) body ids: articulation 的索引体系
+    # =========================================================
     name_to_body_id = {n: i for i, n in enumerate(robot.data.body_names)}
     foot_body_ids = [name_to_body_id[f"{leg}_foot"] for leg in logic_leg_names]
     hip_body_ids = [name_to_body_id[f"{leg}_hip"] for leg in logic_leg_names]
 
-    # =========================
-    # 5) 接触：按 contact_sensor.body_names 映射到逻辑腿顺序 FR,FL,RR,RL
-    # =========================
+    # =========================================================
+    # 3) contact sensor ids: contact sensor 自己的索引体系
+    # =========================================================
     contact_sensor = env.scene.sensors[sensor_cfg.name]
-    logic_leg_names = ["FR", "FL", "RR", "RL"]
 
-    # cache：contact sensor 的 body name -> id（注意：用 contact_sensor.body_names，不是 robot.data.body_names）
     if not hasattr(env, "_contact_name_to_id"):
         env._contact_name_to_id = {n: i for i, n in enumerate(contact_sensor.body_names)}
-
     contact_name_to_id = env._contact_name_to_id
-    contact_foot_ids = [contact_name_to_id[f"{leg}_foot"] for leg in logic_leg_names]  # FR,FL,RR,RL
 
-    foot_contact = (contact_sensor.data.current_contact_time[:, contact_foot_ids] > 0.0).float()  # (N,4)
-    
-    # 8 维 One-Hot (相当于给网络一个明确的“剧本标签”)
-    current_gait_command = env.command_manager.get_command(gait_command_name)  # (N, 1)
-    current_gait_id = current_gait_command[:, 0].long()  # 转为长整型索引
-    gait_obs = torch.nn.functional.one_hot(current_gait_id, num_classes=8).float()  # (N, 8)
+    contact_foot_ids = [contact_name_to_id[f"{leg}_foot"] for leg in logic_leg_names]
 
-    # =========================
-    # 6) Debug print every 200 steps
-    # =========================
+    foot_contact = (
+        contact_sensor.data.current_contact_time[:, contact_foot_ids] > 0.0
+    ).float()  # (N,4)
+
+    # calf contact ids: 注意这里必须基于 contact_sensor.body_names
+    if not hasattr(env, "_contact_calf_ids"):
+        env._contact_calf_ids = {
+            "FR": contact_name_to_id["FR_calf"],
+            "FL": contact_name_to_id["FL_calf"],
+            "RR": contact_name_to_id["RR_calf"],
+            "RL": contact_name_to_id["RL_calf"],
+        }
+
+    # gait one-hot（暂时没拼进 obs，只保留）
+    current_gait_command = env.command_manager.get_command(gait_command_name)
+    current_gait_id = current_gait_command[:, 0].long()
+    gait_obs = torch.nn.functional.one_hot(current_gait_id, num_classes=8).float()
+
+    # =========================================================
+    # 4) 读 beta cache；若本 step 还没算过，则补算一次
+    # =========================================================
+    if (
+        not hasattr(env, "_beta_last_step")
+        or env._beta_last_step != int(env.common_step_counter)
+        or not hasattr(env, "_beta_last_value")
+    ):
+        gait_info = beta_l_raibert(
+            env,
+            gait_table=gait_table,
+            gait_command_name=gait_command_name,
+        )
+    else:
+        gait_info = env._beta_last_value
+
+    # =========================================================
+    # 5) 统一预计算
+    # =========================================================
+    root_pos_w = robot.data.root_pos_w.unsqueeze(1)              # (N,1,3)
+    real_foot_pos_w = robot.data.body_pos_w[:, foot_body_ids, :] # (N,4,3)
+    rel_pos_w = real_foot_pos_w - root_pos_w                     # (N,4,3)
+
+    quat_WB = robot.data.root_quat_w
+    R_WB = quat_wxyz_to_rotmat(quat_WB)
+    real_foot_pos_b = torch.bmm(
+        R_WB.transpose(1, 2),
+        rel_pos_w.transpose(1, 2)
+    ).transpose(1, 2)                                            # (N,4,3)
+
+    forces = contact_sensor.data.net_forces_w                    # (N, n_contact_bodies, 3)
+    force_norm = torch.norm(forces, dim=-1)                      # (N, n_contact_bodies)
+
+    # =========================================================
+    # 前 200 步：单独打印四条腿 z 跟踪
+    # =========================================================
+    # if env.common_step_counter < 200 and hasattr(env, "beta_p_ref_B") and hasattr(env, "beta_contact_ref"):
+    #     print(f"\n[STEP {env.common_step_counter}] FOOT Z ONLY")
+    #     print(f"{'Leg':<5} | {'real_z':<8} | {'ref_z':<8} | {'dz':<8} | {'ref_c':<5} | {'real_c':<6}")
+    #     print("-" * 60)
+
+    #     for i, leg in enumerate(["FR", "FL", "RR", "RL"]):
+    #         real_z = real_foot_pos_b[0, i, 2].item()
+    #         ref_z = env.beta_p_ref_B[0, i, 2].item()
+    #         dz = real_z - ref_z
+    #         ref_c = int(env.beta_contact_ref[0, i].item())
+    #         real_c = int(foot_contact[0, i].item())
+
+    #         print(f"{leg:<5} | {real_z:+.3f}  | {ref_z:+.3f}  | {dz:+.3f}  | {ref_c:<5} | {real_c:<6}")
+    #         print("\n[REAR JOINT CHECK]")
+    #         rr_pos = joint_pos[0, 6:9].detach().cpu().numpy().round(3)
+    #         rl_pos = joint_pos[0, 9:12].detach().cpu().numpy().round(3)
+    #         rr_vel = joint_vel[0, 6:9].detach().cpu().numpy().round(3)
+    #         rl_vel = joint_vel[0, 9:12].detach().cpu().numpy().round(3)
+
+    #         print("RR joint_pos [hip, thigh, calf]:", rr_pos)
+    #         print("RL joint_pos [hip, thigh, calf]:", rl_pos)
+    #         print("RR joint_vel [hip, thigh, calf]:", rr_vel)
+    #         print("RL joint_vel [hip, thigh, calf]:", rl_vel)
+
+    #         roll_indicator = projected_gravity[0, 1].item()
+
+    #         print(
+    #             f"[STEP {env.common_step_counter}] "
+    #             f"grav_y={roll_indicator:+.3f} | "
+    #             f"RR_z={real_foot_pos_b[0,2,2].item():+.3f} ref={env.beta_p_ref_B[0,2,2].item():+.3f} | "
+    #             f"RL_z={real_foot_pos_b[0,3,2].item():+.3f} ref={env.beta_p_ref_B[0,3,2].item():+.3f}"
+    #         )
+
+    # =========================================================
+    # 6) 更频繁 debug：每 20 step 打一次
+    # =========================================================
     if env.common_step_counter % 200 == 0:
         print("\n" + "🏠" * 10 + f" [DEBUG STEP: {env.common_step_counter}] 机身系校验 " + "🏠" * 10)
-
-        # 基本状态
         print(f"Base Height: {base_height[0].item():.3f} | Gravity_B: {projected_gravity[0].cpu().numpy().round(2)}")
         print(f"Lin Vel (v_B):     {lin_vel[0].cpu().numpy().round(3)}")
-
         print("[contact_foot_ids (FR,FL,RR,RL)]", contact_foot_ids)
         print("[contact_foot_names]", [contact_sensor.body_names[i] for i in contact_foot_ids])
-
-        # 名称列表
         print(f"Joint Names in Sim: {robot.data.joint_names}")
         print(f"Body Name Order:   {robot.data.body_names}")
 
-        # 真实接触 bool（来自 contact sensor）
-        # is_contact = contact_sensor.data.current_contact_time[:, env._contact_body_ids] > 0.0
         is_contact = contact_sensor.data.current_contact_time[:, contact_foot_ids] > 0.0
         print("[is_contact bool]", is_contact[0].tolist())
         print("[sensor_cfg.body_ids]", sensor_cfg.body_ids)
         print("[foot_body_ids(body_names)]", foot_body_ids)
 
-        # 参考接触 bool（来自 beta）
         if hasattr(env, "beta_contact_ref"):
             print("[ref_contact bool]", env.beta_contact_ref[0].tolist())
-        
-        contact_sensor = env.scene.sensors[sensor_cfg.name]
 
-        print("\n[CONTACT SENSOR INFO]")
-        print("contact_sensor.body_names =", contact_sensor.body_names)
-        print("len(body_names) =", len(contact_sensor.body_names))
-        print("contact_time.shape =", tuple(contact_sensor.data.current_contact_time.shape))
-
-        # 打印解析出来的 joint_ids 对应名字（确认顺序）
         print("\n[Resolved Joint Order]")
         print([robot.data.joint_names[i] for i in asset_cfg.joint_ids])
 
-        # 打印解析出来的 foot/hip body ids
         print("\n[Resolved Body IDs]")
         print("Hip body ids:", list(zip(logic_leg_names, hip_body_ids)))
         print("Foot body ids:", list(zip(logic_leg_names, foot_body_ids)))
 
-        # ========== A) 世界系足端 + Δ ==========
-        real_foot_pos_w = robot.data.body_pos_w[:, foot_body_ids, :]       # (N,4,3)
-
-        if not hasattr(env, "_debug_prev_foot_pos_w"):
-            env._debug_prev_foot_pos_w = real_foot_pos_w.clone()
-        delta_foot_w = real_foot_pos_w - env._debug_prev_foot_pos_w        # (N,4,3)
-        env._debug_prev_foot_pos_w = real_foot_pos_w.clone()
-
-        # ========== B) body系足端 ==========
-        root_pos_w = robot.data.root_pos_w.unsqueeze(1)                    # (N,1,3)
-        rel_pos_w = real_foot_pos_w - root_pos_w                           # (N,4,3)
-
-        quat_WB = robot.data.root_quat_w
-        R_WB = quat_wxyz_to_rotmat(quat_WB)                                # (N,3,3) body->world
-        real_foot_pos_b = torch.bmm(
-            R_WB.transpose(1, 2),
-            rel_pos_w.transpose(1, 2)
-        ).transpose(1, 2)                                                  # (N,4,3)
-
-        # ΔGravity
-        if not hasattr(env, "_debug_prev_gravity_b"):
-            env._debug_prev_gravity_b = projected_gravity.clone()
-        delta_g = (projected_gravity - env._debug_prev_gravity_b)[0].cpu().numpy().round(4)
-        env._debug_prev_gravity_b = projected_gravity.clone()
-
-        # 世界系足端打印
-        print("\n[Foot Position (World Frame)]")
-        print(f"{'Leg':<5} | {'Foot_W (X,Y,Z)':<28} | {'ΔFoot_W (X,Y,Z)':<28} | {'Con'}")
-        print("-" * 90)
+        # -----------------------------------------------------
+        # 四条腿 z 跟踪
+        # -----------------------------------------------------
+        print("\n[FOOT Z TRACKING DEBUG]")
+        print(f"{'Leg':<5} | {'real_z':<8} | {'ref_z':<8} | {'dz':<8} | {'ref_c':<5} | {'real_c':<6}")
+        print("-" * 60)
         for i, leg in enumerate(logic_leg_names):
-            fw = real_foot_pos_w[0, i, :3].cpu().numpy().round(3)
-            dfw = delta_foot_w[0, i, :3].cpu().numpy().round(4)
-            con = foot_contact[0, i].item()
-            print(f"{leg:<5} | {str(fw):<28} | {str(dfw):<28} | {con}")
-        print(f"\nΔGravity_B: {delta_g}")
+            real_z = real_foot_pos_b[0, i, 2].item()
+            ref_z = env.beta_p_ref_B[0, i, 2].item() if hasattr(env, "beta_p_ref_B") else float("nan")
+            dz = real_z - ref_z
+            ref_c = int(env.beta_contact_ref[0, i].item()) if hasattr(env, "beta_contact_ref") else -1
+            real_c = int(foot_contact[0, i].item())
+            print(f"{leg:<5} | {real_z:+.3f}  | {ref_z:+.3f}  | {dz:+.3f}  | {ref_c:<5} | {real_c:<6}")
 
-        # RR腿深度检查：现在 RR 起始索引仍是 6（因为逻辑顺序固定）
-        rr_joint_pos = joint_pos[0, 6:9]
-        rr_joint_vel = joint_vel[0, 6:9]
-        print(f"\n[RR Leg Deep Check]")
-        print(f"RR_Hip   | Pos: {rr_joint_pos[0]:.4f} | Vel: {rr_joint_vel[0]:.4f}")
-        print(f"RR_Thigh | Pos: {rr_joint_pos[1]:.4f} | Vel: {rr_joint_vel[1]:.4f}")
-        print(f"RR_Calf  | Pos: {rr_joint_pos[2]:.4f} | Vel: {rr_joint_vel[2]:.4f}")
-
-        # 关键：验证 index 6 在“逻辑关节数组”里到底对应什么真实名字
-        print(f"Index 6 in logic is actually: {robot.data.joint_names[asset_cfg.joint_ids[6]]}")
-
-        # Hip 静态参考、脚点参考、实际脚点（Body Frame）
-        print("\n[Leg Ordering Verification (Body Frame)]")
-        print(f"{'Leg':<5} | {'Hip_Base (X,Y)':<18} | {'Ref_Foot (X,Y)':<18} | {'Real_Foot_B (X,Y,Z)':<25} | {'Con'}")
-        print("-" * 110)
+        # -----------------------------------------------------
+        # 机体系脚点详细信息
+        # -----------------------------------------------------
+        print("\n[Body-Frame Foot Debug]")
+        print(f"{'Leg':<5} | {'Hip_Base_B (x,y,z)':<24} | {'Ref_Foot_B (x,y,z)':<24} | {'Real_Foot_B (x,y,z)':<24} | {'Err_B (x,y,z)':<24}")
+        print("-" * 130)
 
         for i, leg in enumerate(logic_leg_names):
-            h_base = "N/A"
-            if hasattr(env, "_raibert_hip_pos_B_static"):
-                h_base = env._raibert_hip_pos_B_static[0, i, :2].cpu().numpy().round(3)
+            hip_b = "N/A"
+            ref_b = "N/A"
+            err_b = "N/A"
 
-            f_ref_b = "N/A"
-            if hasattr(env, "_raibert_p_ref_B"):
-                f_ref_b = env._raibert_p_ref_B[0, i, :2].cpu().numpy().round(3)
+            if hasattr(env, "beta_hip_base_B"):
+                hip_b = env.beta_hip_base_B[0, i].detach().cpu().numpy().round(3)
 
-            f_real_b = real_foot_pos_b[0, i, :3].cpu().numpy().round(3)
-            con = foot_contact[0, i].item()
-            print(f"{leg:<5} | {str(h_base):<18} | {str(f_ref_b):<18} | {str(f_real_b):<25} | {con}")
+            if hasattr(env, "beta_p_ref_B"):
+                ref_b = env.beta_p_ref_B[0, i].detach().cpu().numpy().round(3)
+                err_b = (real_foot_pos_b[0, i] - env.beta_p_ref_B[0, i]).detach().cpu().numpy().round(3)
 
-        # 世界系跟踪误差（如存在）
-        if hasattr(env, "beta_foot_pos_ref_w"):
-            total_err = torch.norm(real_foot_pos_w[0] - env.beta_foot_pos_ref_w[0], dim=-1).mean().item()
-            print(f"\nMean Tracking Error (World): {total_err:.4f}")
+            real_b = real_foot_pos_b[0, i].detach().cpu().numpy().round(3)
 
-        # 全 body dump (World + Body)
-        print("\n[Full Body Position Dump]")
-        print(f"{'ID':<4} | {'Body Name':<15} | {'World (X,Y,Z)':<25} | {'Body (X,Y,Z)':<25}")
-        print("-" * 95)
+            print(f"{leg:<5} | {str(hip_b):<24} | {str(ref_b):<24} | {str(real_b):<24} | {str(err_b):<24}")
 
-        all_body_pos_w = robot.data.body_pos_w                             # (N, Nbodies, 3)
-        root_pos_w_full = robot.data.root_pos_w.unsqueeze(1)               # (N,1,3)
-        rel_pos_w_full = all_body_pos_w - root_pos_w_full                  # (N,Nbodies,3)
-        all_body_pos_b = torch.bmm(
-            R_WB.transpose(1, 2),
-            rel_pos_w_full.transpose(1, 2)
-        ).transpose(1, 2)                                                  # (N,Nbodies,3)
+        # -----------------------------------------------------
+        # calf contact debug（修正索引体系）
+        # -----------------------------------------------------
+        print("\n[CALF CONTACT DEBUG]")
+        for leg in logic_leg_names:
+            cid = env._contact_calf_ids[leg]
+            contact_flag = (force_norm[0, cid] > 1.0).item()
+            force_val = force_norm[0, cid].item()
+            print(f"{leg} calf contact: {contact_flag} | force: {force_val:.2f}")
 
-        for idx, bname in enumerate(robot.data.body_names):
-            w_pos = all_body_pos_w[0, idx].cpu().numpy().round(3)
-            b_pos = all_body_pos_b[0, idx].cpu().numpy().round(3)
-            print(f"{idx:<4} | {bname:<15} | {str(w_pos):<25} | {str(b_pos):<25}")
+        # -----------------------------------------------------
+        # rear leg height check
+        # -----------------------------------------------------
+        print("\n[REAR LEG HEIGHT CHECK]")
+        for i, leg in enumerate(logic_leg_names):
+            if leg in ["RR", "RL"]:
+                real_z = real_foot_pos_b[0, i, 2].item()
+                ref_z = env.beta_p_ref_B[0, i, 2].item() if hasattr(env, "beta_p_ref_B") else float("nan")
+                dz = real_z - ref_z
+                print(f"{leg}: real_z={real_z:.3f} | ref_z={ref_z:.3f} | dz={dz:.3f}")
 
-        print("🏠" * 35 + "\n")
+        # -----------------------------------------------------
+        # RL touchdown delay check（你最关心的）
+        # -----------------------------------------------------
+        print("\n[RL TOUCHDOWN DELAY CHECK]")
+        i = 3  # RL
+        rl_ref_c = bool(env.beta_contact_ref[0, i].item()) if hasattr(env, "beta_contact_ref") else False
+        rl_real_c = bool(foot_contact[0, i].item())
+        rl_real_b = real_foot_pos_b[0, i].detach().cpu().numpy().round(3)
+        rl_ref_b = env.beta_p_ref_B[0, i].detach().cpu().numpy().round(3) if hasattr(env, "beta_p_ref_B") else "N/A"
+        print("RL ref_contact:", rl_ref_c)
+        print("RL real_contact:", rl_real_c)
+        print("RL ref_foot_B:", rl_ref_b)
+        print("RL real_foot_B:", rl_real_b)
+        print("RL joint_pos [hip, thigh, calf]:", joint_pos[0, 9:12].detach().cpu().numpy().round(3))
+        print("RL joint_vel [hip, thigh, calf]:", joint_vel[0, 9:12].detach().cpu().numpy().round(3))
 
-    # =========================
-    # 7) 拼接观测向量(50+8)
-    # =========================
-    return torch.cat(
-        [
-            projected_gravity,
-            joint_pos,
-            ang_vel,
-            joint_vel,
-            lin_vel,
-            base_height,
-            joint_torques,
-            foot_contact,
-            gait_obs           # +8 (额外标签)
-        ],
-        dim=-1,
-    )
+    # =========================================================
+    # 7) 关键异常实时抓取：该落地但没落地
+    # =========================================================
+    if current_gait_id[0].item() == 0 and hasattr(env, "beta_contact_ref"):
+        for leg, i in zip(logic_leg_names, [0, 1, 2, 3]):
+            ref_c = bool(env.beta_contact_ref[0, i].item())
+            real_c = bool(foot_contact[0, i].item())
+
+            if ref_c and not real_c:
+                real_z = real_foot_pos_b[0, i, 2].item()
+                ref_z = env.beta_p_ref_B[0, i, 2].item() if hasattr(env, "beta_p_ref_B") else float("nan")
+                print(f"\n⚠️ [{leg} SHOULD TOUCH BUT NOT TOUCHING]")
+                print(
+                    f"{leg} | real_z={real_z:+.3f} | ref_z={ref_z:+.3f} | dz={real_z-ref_z:+.3f} "
+                    f"| ref_c=1 real_c=0"
+                )
+
+    # =========================================================
+    # 8) Bound 膝盖着地瞬间捕捉：每 20 step 检查一次
+    # =========================================================
+    if env.common_step_counter % 20 == 0 and current_gait_id[0].item() == 0:
+        for leg in ["RR", "RL"]:
+            cid = env._contact_calf_ids[leg]
+            if force_norm[0, cid] > 5.0:
+                print("\n🔥🔥🔥 [KNEE CONTACT DETECTED] 🔥🔥🔥")
+                print(f"Leg: {leg}")
+                print(f"Calf force: {force_norm[0, cid].item():.2f}")
+
+                i = logic_leg_names.index(leg)
+                foot_contact_cid = contact_foot_ids[i]
+                foot_force = force_norm[0, foot_contact_cid].item()
+                print(f"Foot force: {foot_force:.2f}")
+                print(f"Foot height (z): {real_foot_pos_b[0, i, 2].item():.3f}")
+
+                if hasattr(env, "beta_p_ref_B"):
+                    print(f"Ref foot z: {env.beta_p_ref_B[0, i, 2].item():.3f}")
+                    print(f"dz(real-ref): {(real_foot_pos_b[0, i, 2] - env.beta_p_ref_B[0, i, 2]).item():.3f}")
+
+    # =========================================================
+    # 9) unpack gait_info
+    # =========================================================
+    g_reshaped = gait_info.view(-1, 4, 4)
+    vel_cmd = env.command_manager.get_command("base_velocity")
+
+    desFeetContact = g_reshaped[:, :, 0]
+    refFootX = g_reshaped[:, :, 1]
+    refFootY = g_reshaped[:, :, 2]
+    refFootZ = g_reshaped[:, :, 3]
+
+    # =========================================================
+    # 10) final obs
+    # =========================================================
+    obs_69 = torch.cat([
+        projected_gravity,  # 3
+        joint_pos,          # 12
+        ang_vel,            # 3
+        joint_vel,          # 12
+        lin_vel,            # 3
+        vel_cmd,            # 3
+        joint_torques,      # 12
+        foot_contact,       # 4
+        base_height,        # 1
+        desFeetContact,     # 4
+        refFootZ,           # 4
+        refFootX,           # 4
+        refFootY            # 4
+    ], dim=-1)
+
+    return obs_69

@@ -70,28 +70,28 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
 # --- 配置表 ---
 GAIT_CONFIGS = {
     "3": {
-        "name": "stand", "period": 1.0, "threshold": 1.0, "offset": [0.0, 0.0, 0.0, 0.0], 
-        "k": 0.01, "z_nom": -0.32, "x_lim": 0.10, "y_lim": 0.08},
+        "name": "stand", "period": 1.0, "threshold": 1.0, "offset": [0.0, 0.0, 0.0, 0.0],
+        "k": 0.01, "z_nom": -0.32, "x_lim": 0.14, "y_lim": 0.08},
     "1": {
-        "name": "trot", "period": 0.8, "threshold": 0.5, "offset": [0.0, 0.5, 0.5, 0.0], 
-        "k": 0.03, "z_nom": -0.32, "x_lim": 0.14, "y_lim": 0.10},
+        "name": "trot", "period": 0.8, "threshold": 0.5, "offset": [0.0, 0.5, 0.5, 0.0],
+        "k": 0.03, "z_nom": -0.32, "x_lim": 0.10, "y_lim": 0.10},
     "2": {
-        "name": "run", "period": 0.4, "threshold": 0.4, "offset": [0.0, 0.5, 0.5, 0.5], 
+        "name": "run", "period": 0.4, "threshold": 0.4, "offset": [0.0, 0.5, 0.5, 0.5],
         "k": 0.05, "z_nom": -0.32, "x_lim": 0.16, "y_lim": 0.12},
     "0": {
-        "name": "bound", "period": 0.6, "threshold": 0.4, "offset": [0.0, 0.0, 0.5, 0.5], 
-        "k": 0.05, "z_nom": -0.32, "x_lim": 0.14, "y_lim": 0.10},
+        "name": "bound", "period": 0.5, "threshold": 0.4, "offset": [0.5, 0.5, 0.0, 0.0],
+        "k": 0.03, "z_nom": -0.32, "x_lim": 0.12, "y_lim": 0.10},
     "4": {
-        "name": "pronk", "period": 0.5, "threshold": 0.3, "offset": [0.0, 0.0, 0.0, 0.0], 
+        "name": "pronk", "period": 0.5, "threshold": 0.3, "offset": [0.0, 0.0, 0.0, 0.0],
         "k": 0.08, "z_nom": -0.28, "x_lim": 0.12, "y_lim": 0.10},
     "5": {
-        "name": "limp", "period": 0.6, "threshold": 0.6, "offset": [0.5, 0.5, 0.5, 0.0], 
+        "name": "limp", "period": 0.6, "threshold": 0.6, "offset": [0.5, 0.5, 0.5, 0.0],
         "k": 0.03, "z_nom": -0.32, "x_lim": 0.14, "y_lim": 0.10},
     "6": {
-        "name": "amble", "period": 0.6, "threshold": 0.6, "offset": [0.0, 0.5, 0.25, 0.75], 
+        "name": "amble", "period": 0.6, "threshold": 0.6, "offset": [0.0, 0.5, 0.25, 0.75],
         "k": 0.02, "z_nom": -0.32, "x_lim": 0.14, "y_lim": 0.12},
     "7": {
-        "name": "hop", "period": 0.3, "threshold": 0.2, "offset": [0.0, 0.0, 0.0, 0.0], 
+        "name": "hop", "period": 0.3, "threshold": 0.2, "offset": [0.0, 0.0, 0.0, 0.0],
         "k": 0.06, "z_nom": -0.30, "x_lim": 0.15, "y_lim": 0.10},
 }
 
@@ -230,20 +230,20 @@ class CommandsCfg:
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
             lin_vel_x=(-1.0, 1.0),
             lin_vel_y=(-0.4, 0.4),
-            ang_vel_z=(-1.0, 1.0),
+            ang_vel_z=(-0.5, 0.5),
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
             lin_vel_x=(-1.0, 1.0),
             lin_vel_y=(-0.5, 0.5),
-            ang_vel_z=(-1.0, 1.0),
+            ang_vel_z=(-0.5, 0.5),
         ),
     )
 
     gait_id = mdp.UniformIntegerCommandCfg(
         num_commands=1,
-        resampling_time_range=(10.0, 10.0),
+        resampling_time_range=(8.0, 10.0),
         params={
-            "range": (0, 1), 
+            "range": (0, 1),  # 0, 1, 2, 3, 4, 5, 6, 7 共8种 gait
             "asset_cfg": SceneEntityCfg("robot"), 
         },
     )
@@ -292,21 +292,21 @@ class ObservationsCfg:
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
         
-        gait_beta = ObsTerm(
-            func=mdp.beta_l_raibert,
-            params={
-                "gait_table": GAIT_CONFIGS,
-                # "gait_id": CURRENT_GAIT_ID,  # 自动同步
-                "gait_command_name": "gait_id",
-            },
-        )
+        # gait_beta = ObsTerm(
+        #     func=mdp.beta_l_raibert,
+        #     params={
+        #         "gait_table": GAIT_CONFIGS,
+        #         # "gait_id": CURRENT_GAIT_ID,  # 自动同步
+        #         "gait_command_name": "gait_id",
+        #     },
+        # )
 
         # 2. 修改 state_s，把 gait_id 作为观测喂给网络
         state_s = ObsTerm(
             func=mdp.robot_state_s,
             params={
-                # "gait_id": CURRENT_GAIT_ID,  # 自动同步
                 "gait_command_name": "gait_id",
+                "gait_table": GAIT_CONFIGS,
                 "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"]),
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[
                     "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
@@ -320,11 +320,11 @@ class ObservationsCfg:
         )
 
         # 3. velocity_commands 保持不变
-        velocity_commands = ObsTerm(
-            func=mdp.generated_commands, 
-            params={"command_name": "base_velocity"},
-            clip=(-100, 100)
-        )
+        # velocity_commands = ObsTerm(
+        #     func=mdp.generated_commands, 
+        #     params={"command_name": "base_velocity"},
+        #     clip=(-100, 100)
+        # )
 
         def __post_init__(self):
             self.enable_corruption = True
@@ -392,7 +392,7 @@ class RewardsCfg:
     # Eq.(8) - r_f will read env.beta_* references
     gait_tracking = RewTerm(
         func=mdp.r_f,
-        weight=-10.0,
+        weight=-18.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",

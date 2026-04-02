@@ -147,81 +147,65 @@ def r_f(
     sensor_cfg: SceneEntityCfg,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Gait tracking cost (Eq. 8).
-
-    - reference:
-        env.beta_p_ref_rel_w : (N,4,3)  world-frame relative foot ref (foot_ref_w - root_w)
-        env.beta_contact_ref : (N,4)    stance reference bool in LOGIC order [FR,FL,RR,RL]
-    - measurement:
-        real_rel_pos_w : (N,4,3) from articulation body_pos_w, LOGIC order [FR,FL,RR,RL]
-        is_contact     : (N,4)   from contact sensor, LOGIC order [FR,FL,RR,RL]
-    """
     asset = env.scene[asset_cfg.name]
     contact_sensor = env.scene.sensors[sensor_cfg.name]
 
-    # ------------------------------------------------------------
-    # 0) beta refs guard
-    # ------------------------------------------------------------
+    # 0) 只读缓存，不主动推进 beta 状态
     if not hasattr(env, "beta_p_ref_rel_w") or not hasattr(env, "beta_contact_ref"):
-        if env.common_step_counter % 200 == 0:
-            print("[REWARD GAIT] beta refs missing -> return 0.0")
-        return torch.zeros(env.num_envs, device=env.device, dtype=torch.float32)
+        return torch.zeros(env.num_envs, device=env.device)
 
-    ref_rel_pos_w = env.beta_p_ref_rel_w                 # (N,4,3) LOGIC [FR,FL,RR,RL]
-    contact_ref_bool = env.beta_contact_ref.bool()       # (N,4)   LOGIC [FR,FL,RR,RL]
+    ref_rel_pos_w = env.beta_p_ref_rel_w                  # (N,4,3)
+    contact_ref_bool = env.beta_contact_ref.bool()        # (N,4)
 
-    # ------------------------------------------------------------
-    # 1) articulation foot ids (asset.data.body_names indexing)
-    #    for body_pos_w ONLY
-    # ------------------------------------------------------------
+    # 1) articulation foot ids in LOGIC order [FR, FL, RR, RL]
     logic_leg_names = ["FR", "FL", "RR", "RL"]
     if not hasattr(env, "_rf_foot_body_ids"):
         name_to_body_id = {n: i for i, n in enumerate(asset.data.body_names)}
         env._rf_foot_body_ids = [name_to_body_id[f"{leg}_foot"] for leg in logic_leg_names]
     foot_body_ids = env._rf_foot_body_ids
 
-    foot_pos_w = asset.data.body_pos_w[:, foot_body_ids, :]      # (N,4,3) LOGIC
-    root_pos_w = asset.data.root_pos_w.unsqueeze(1)              # (N,1,3)
-    real_rel_pos_w = foot_pos_w - root_pos_w                     # (N,4,3) LOGIC
+    foot_pos_w = asset.data.body_pos_w[:, foot_body_ids, :]   # (N,4,3)
+    root_pos_w = asset.data.root_pos_w.unsqueeze(1)           # (N,1,3)
+    real_rel_pos_w = foot_pos_w - root_pos_w                  # (N,4,3)
 
-    # ------------------------------------------------------------
-    # 2) contact ids (contact_sensor.body_names indexing)
-    #    IMPORTANT: DO NOT use sensor_cfg.body_ids here (it may be FL,FR,RL,RR)
-    # ------------------------------------------------------------
+    # 2) contact ids from contact sensor indexing
     if not hasattr(env, "_rf_contact_foot_ids"):
-        # contact sensor 的名字列表就是它自己的索引体系
         contact_name_to_id = {n: i for i, n in enumerate(contact_sensor.body_names)}
         env._rf_contact_foot_ids = [contact_name_to_id[f"{leg}_foot"] for leg in logic_leg_names]
     contact_foot_ids = env._rf_contact_foot_ids
 
-    is_contact = contact_sensor.data.current_contact_time[:, contact_foot_ids] > 0.0  # (N,4) LOGIC
+    is_contact = contact_sensor.data.current_contact_time[:, contact_foot_ids] > 0.0  # (N,4)
 
-    # contact mismatch cost
+    # 3) contact mismatch cost
     c_err = (is_contact ^ contact_ref_bool).float()
-    c_cost = c_err.mean(dim=-1)  # (N,)
+    c_cost = c_err.mean(dim=-1) * 1.2
 
-    # ------------------------------------------------------------
-    # 3) swing foot xy tracking cost (only swing legs)
-    # ------------------------------------------------------------
+    # 4) only penalize swing legs for foot placement tracking
+    swing_mask = (~contact_ref_bool).float()   # (N,4)
+    num_swing = swing_mask.sum(dim=-1)         # (N,)
+
+    # XY distance
     pos_dist_xy = torch.norm(real_rel_pos_w[..., :2] - ref_rel_pos_w[..., :2], dim=-1)  # (N,4)
-
     sigma_xy = 0.10
-    pos_cost = 1.0 - torch.exp(-(pos_dist_xy ** 2) / (2.0 * sigma_xy ** 2))  # (N,4)
+    pos_cost_xy = 1.0 - torch.exp(-(pos_dist_xy ** 2) / (2.0 * sigma_xy ** 2))          # (N,4)
 
-    swing_mask = (~contact_ref_bool).float()
-    num_swing = swing_mask.sum(dim=-1)
+    # Z distance
+    pos_dist_z = torch.abs(real_rel_pos_w[..., 2] - ref_rel_pos_w[..., 2])               # (N,4)
+    sigma_z = 0.08
+    pos_cost_z = 1.0 - torch.exp(-(pos_dist_z ** 2) / (2.0 * sigma_z ** 2))              # (N,4)
+
+    # combine XY + Z
+    # 先给 Z 更高一点权重，因为你当前主要问题就是“脚下不去”
+    foot_cost = pos_cost_xy + 1.0 * pos_cost_z                                            # (N,4)
 
     p_cost = torch.where(
         num_swing > 0.0,
-        (pos_cost * swing_mask).sum(dim=-1) / (num_swing + 1e-6),
+        (foot_cost * swing_mask).sum(dim=-1) / (num_swing + 1e-6),
         torch.zeros_like(num_swing),
     )
 
     total_cost = c_cost + p_cost
 
-    # ------------------------------------------------------------
-    # Debug
-    # ------------------------------------------------------------
     if env.common_step_counter == 0:
         print("[r_f DEBUG] contact_sensor.body_names =", contact_sensor.body_names)
         print("[r_f DEBUG] contact_foot_ids(FR,FL,RR,RL) =", contact_foot_ids)
@@ -230,11 +214,18 @@ def r_f(
 
     if env.common_step_counter % 200 == 0:
         mean_xy = ((pos_dist_xy * swing_mask).sum(dim=-1) / (num_swing + 1e-6))[0].item()
-        print(f"[REWARD GAIT] c_cost={c_cost[0].item():.4f} p_cost={p_cost[0].item():.4f} "
-              f"total={total_cost[0].item():.4f} | mean_swing_xy_err={mean_xy:.4f}m")
+        mean_z = ((pos_dist_z * swing_mask).sum(dim=-1) / (num_swing + 1e-6))[0].item()
+        print(
+            f"[REWARD GAIT] c_cost={c_cost[0].item():.4f} "
+            f"p_cost={p_cost[0].item():.4f} "
+            f"total={total_cost[0].item():.4f} | "
+            f"mean_swing_xy_err={mean_xy:.4f}m | "
+            f"mean_swing_z_err={mean_z:.4f}m"
+        )
 
     return total_cost
-# -----------------------------------------------------------------------------
+
+# --------------------------------------------------------
 # r_stab (Eq. 9): stability
 # r_stab = sum_{i=1..F} ||p_dot_i||^2 + ||omega_xy||^2
 #          + psi(||alpha R_B - alpha R_B^des||^2)
@@ -306,7 +297,8 @@ def r_stab(
     # 姿态项
     alphaR_B = asset.data.projected_gravity_b
     orient_err2 = torch.sum((alphaR_B - desired_gravity_b) ** 2, dim=-1)
-    orient_term = psi(orient_err2)
+    # orient_term = psi(orient_err2)
+    orient_term = 1.0 - psi(orient_err2)
 
     # 高度项
     zB = asset.data.root_pos_w[:, 2]

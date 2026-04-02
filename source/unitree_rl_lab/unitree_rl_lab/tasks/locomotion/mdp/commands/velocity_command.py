@@ -30,9 +30,9 @@ class UniformIntegerCommand(CommandTerm):
         """实现基类要求的抽象方法：采样逻辑。"""
         # 仅针对需要重采样的环境 ID 进行随机化
         rands = torch.randint(
-            low=self.low, 
-            high=self.high + 1, 
-            size=(len(env_ids), 1), 
+            low=self.low,
+            high=self.high + 1,
+            size=(len(env_ids), 1),
             device=self.device
         ).float()
         

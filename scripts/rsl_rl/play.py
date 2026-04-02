@@ -445,7 +445,7 @@ def main():
             ui.Spacer(height=10)
             ui.Label("Note: All envs will switch simultaneously.", style={"font_size": 10, "color": 0x99FFFFFF})
 
-    gait_table = env_cfg.observations.policy.gait_beta.params["gait_table"]
+    gait_table = env_cfg.observations.policy.state_s.params["gait_table"]
     while simulation_app.is_running():
         start_time = time.time()
 
@@ -453,7 +453,6 @@ def main():
             actions = policy(obs)
             obs, _, _, _ = env.step(actions)
             sim_step_count += 1
-            gait_params = env.unwrapped.cfg.observations.policy.gait_beta.params
 
             # --- 新增：获取并打印步态 ID ---
             # 从 CommandManager 获取当前所有环境的 gait_id
