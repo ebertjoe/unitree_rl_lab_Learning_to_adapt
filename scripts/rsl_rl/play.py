@@ -404,7 +404,7 @@ def main():
     print(f"[INIT] base_pos_w=({p0[0].item():.3f},{p0[1].item():.3f},{p0[2].item():.3f}) yaw={yaw0.item():.3f} rad")
 
     # --- [NEW] UI Gait Controller ---
-    gait_names = ["Bound (0)", "Trot (1)", "Run (2)", "Stand (3)", "Pronk (4)", "Limp (5)", "Amble (6)", "Hop (7)"]
+    gait_names = ["Bound (0)", "Trot (1)", "Hop (2)", "Amble (3)", "Pronk (4)", "Limp (5)", "Stand (6)", "Run (7)"]
     
     # Create UI window
     _gait_window = ui.Window("Gait Controller", width=300, height=200)
@@ -447,8 +447,8 @@ def main():
                 current_id = int(gait_ids[env_id].item())
                 # Gait name mapping
                 gait_map = {
-                    "0": "Bound", "1": "Trot", "2": "Run", "3": "Stand", 
-                    "4": "Pronk", "5": "Limp", "6": "Amble", "7": "Hop"
+                    "0": "Bound", "1": "Trot", "2": "Hop", "3": "Amble", 
+                    "4": "Pronk", "5": "Limp", "6": "Stand", "7": "Run"
                 }
                 name = gait_map.get(str(current_id), "Unknown")
                 print(f"\033[92m>>> [ENV {env_id}] 当前步态 ID: {current_id} ({name}) \033[0m")

@@ -69,30 +69,30 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
 
 # --- 配置表 ---
 GAIT_CONFIGS = {
-    "3": {
+    "6": {
         "name": "stand", "period": 1.0, "threshold": 1.0, "offset": [0.0, 0.0, 0.0, 0.0],
-        "k": 0.01, "z_nom": -0.32, "x_lim": 0.14, "y_lim": 0.08},
+        "k": 0.01, "z_nom": -0.32, "x_lim": 0.10, "y_lim": 0.10},
     "1": {
-        "name": "trot", "period": 0.8, "threshold": 0.5, "offset": [0.0, 0.5, 0.5, 0.0],
+        "name": "trot", "period": 0.4, "threshold": 0.5, "offset": [0.0, 0.5, 0.5, 0.0],
         "k": 0.03, "z_nom": -0.32, "x_lim": 0.10, "y_lim": 0.10},
-    "2": {
+    "7": {
         "name": "run", "period": 0.4, "threshold": 0.4, "offset": [0.0, 0.5, 0.5, 0.5],
         "k": 0.05, "z_nom": -0.32, "x_lim": 0.16, "y_lim": 0.12},
     "0": {
-        "name": "bound", "period": 0.5, "threshold": 0.4, "offset": [0.5, 0.5, 0.0, 0.0],
+        "name": "bound", "period": 0.4, "threshold": 0.4, "offset": [0.5, 0.5, 0.0, 0.0],
         "k": 0.03, "z_nom": -0.32, "x_lim": 0.12, "y_lim": 0.10},
     "4": {
-        "name": "pronk", "period": 0.5, "threshold": 0.3, "offset": [0.0, 0.0, 0.0, 0.0],
-        "k": 0.08, "z_nom": -0.28, "x_lim": 0.12, "y_lim": 0.10},
+        "name": "pronk", "period": 0.5, "threshold": 0.5, "offset": [0.0, 0.0, 0.0, 0.0],
+        "k": 0.01, "z_nom": -0.30, "x_lim": 0.08, "y_lim": 0.10},
     "5": {
-        "name": "limp", "period": 0.6, "threshold": 0.6, "offset": [0.5, 0.5, 0.5, 0.0],
-        "k": 0.03, "z_nom": -0.32, "x_lim": 0.14, "y_lim": 0.10},
-    "6": {
-        "name": "amble", "period": 0.6, "threshold": 0.6, "offset": [0.0, 0.5, 0.25, 0.75],
+        "name": "limp", "period": 0.4, "threshold": 0.5, "offset": [0.5, 0.5, 0.5, 0.0],
+        "k": 0.03, "z_nom": -0.32, "x_lim": 0.12, "y_lim": 0.10},
+    "3": {
+        "name": "amble", "period": 0.5, "threshold": 0.625, "offset": [0.0, 0.5, 0.25, 0.75],
         "k": 0.02, "z_nom": -0.32, "x_lim": 0.14, "y_lim": 0.12},
-    "7": {
-        "name": "hop", "period": 0.3, "threshold": 0.2, "offset": [0.0, 0.0, 0.0, 0.0],
-        "k": 0.06, "z_nom": -0.30, "x_lim": 0.15, "y_lim": 0.10},
+    "2": {
+        "name": "hop", "period": 0.3, "threshold": 0.5, "offset": [0.0, 0.0, 0.0, 0.0],
+        "k": 0.03, "z_nom": -0.30, "x_lim": 0.15, "y_lim": 0.10},
 }
 
 
@@ -228,12 +228,12 @@ class CommandsCfg:
         resampling_time_range=(2.0, 4.0),
         rel_standing_envs=0.02,
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-1.0, 1.0),
+            lin_vel_x=(0.0, 1.2),
             lin_vel_y=(-0.4, 0.4),
             ang_vel_z=(-0.5, 0.5),
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-1.0, 1.0),
+            lin_vel_x=(0.0, 1.2),
             lin_vel_y=(-0.5, 0.5),
             ang_vel_z=(-0.5, 0.5),
         ),
@@ -243,7 +243,7 @@ class CommandsCfg:
         num_commands=1,
         resampling_time_range=(8.0, 10.0),
         params={
-            "range": (0, 1),  # 0, 1, 2, 3, 4, 5, 6, 7 There are 8 types of gait
+            "range": (6, 6),  # 0, 1, 2, 3, 4, 5, 6, 7 There are 8 types of gait
             "asset_cfg": SceneEntityCfg("robot"), 
         },
     )
@@ -504,5 +504,5 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         self.commands.base_velocity.resampling_time_range = (9999.0, 9999.0)
         self.commands.base_velocity.rel_standing_envs = 0.0
         self.commands.base_velocity.ranges = self.commands.base_velocity.ranges.replace(
-            lin_vel_x=(1.0, 1.0), lin_vel_y=(0.0, 0.0), ang_vel_z=(0.0, 0.0)
+            lin_vel_x=(0.0, 0.0), lin_vel_y=(0.0, 0.0), ang_vel_z=(0.0, 0.0)
         )
