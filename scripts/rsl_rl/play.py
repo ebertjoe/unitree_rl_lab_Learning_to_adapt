@@ -451,7 +451,7 @@ def main():
                     "4": "Pronk", "5": "Limp", "6": "Stand", "7": "Run"
                 }
                 name = gait_map.get(str(current_id), "Unknown")
-                print(f"\033[92m>>> [ENV {env_id}] 当前步态 ID: {current_id} ({name}) \033[0m")
+                print(f"\033[92m>>> [ENV {env_id}] current state ID: {current_id} ({name}) \033[0m")
 
             # --------- compute beta_l ----------
             beta = beta_l_raibert(

@@ -193,7 +193,7 @@ To visualize a trained policy:
 ```bash
 python scripts/rsl_rl/play.py \
     --task Unitree-Go2-Velocity \
-    --run_name Stable_Gait_Start_n
+    --checkpoint logs/rsl_rl/unitree_go2_locomotion_paper/<run_name>/model_xxxx.pt
 ```
-- run_name Stable_Gait_Start_n: loads the trained model from the n-th run
-used to evaluate and visualize the trained gait performance
+- <run_name> = full folder name (including timestamp)
+- model_xxxx.pt = specific checkpoint to evaluate

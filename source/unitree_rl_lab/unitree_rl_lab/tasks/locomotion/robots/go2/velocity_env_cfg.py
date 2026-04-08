@@ -76,14 +76,14 @@ GAIT_CONFIGS = {
         "name": "trot", "period": 0.4, "threshold": 0.5, "offset": [0.0, 0.5, 0.5, 0.0],
         "k": 0.03, "z_nom": -0.32, "x_lim": 0.10, "y_lim": 0.10},
     "7": {
-        "name": "run", "period": 0.4, "threshold": 0.4, "offset": [0.0, 0.5, 0.5, 0.5],
-        "k": 0.05, "z_nom": -0.32, "x_lim": 0.16, "y_lim": 0.12},
+        "name": "run", "period": 0.3, "threshold": 0.4, "offset": [0.0, 0.5, 0.5, 0.0],
+        "k": 0.03, "z_nom": -0.32, "x_lim": 0.12, "y_lim": 0.10},
     "0": {
         "name": "bound", "period": 0.4, "threshold": 0.4, "offset": [0.5, 0.5, 0.0, 0.0],
         "k": 0.03, "z_nom": -0.32, "x_lim": 0.12, "y_lim": 0.10},
     "4": {
         "name": "pronk", "period": 0.5, "threshold": 0.5, "offset": [0.0, 0.0, 0.0, 0.0],
-        "k": 0.01, "z_nom": -0.30, "x_lim": 0.08, "y_lim": 0.10},
+        "k": 0.01, "z_nom": -0.32, "x_lim": 0.08, "y_lim": 0.10},
     "5": {
         "name": "limp", "period": 0.4, "threshold": 0.5, "offset": [0.5, 0.5, 0.5, 0.0],
         "k": 0.03, "z_nom": -0.32, "x_lim": 0.12, "y_lim": 0.10},
@@ -243,7 +243,7 @@ class CommandsCfg:
         num_commands=1,
         resampling_time_range=(8.0, 10.0),
         params={
-            "range": (6, 6),  # 0, 1, 2, 3, 4, 5, 6, 7 There are 8 types of gait
+            "range": (0, 7),  # 0, 1, 2, 3, 4, 5, 6, 7 There are 8 types of gait
             "asset_cfg": SceneEntityCfg("robot"), 
         },
     )
@@ -253,7 +253,7 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
     JointPositionAction = mdp.JointPositionActionCfg(
-        asset_name="robot", 
+        asset_name="robot",
         # Explicitly list these 12 names to ensure the neural network output's first dimension always corresponds to FR_hip_joint
         joint_names=[
             "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
@@ -291,15 +291,6 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
-        
-        # gait_beta = ObsTerm(
-        #     func=mdp.beta_l_raibert,
-        #     params={
-        #         "gait_table": GAIT_CONFIGS,
-        #         # "gait_id": CURRENT_GAIT_ID,  # 自动同步
-        #         "gait_command_name": "gait_id",
-        #     },
-        # )
 
         # 2. Modify state_s
         state_s = ObsTerm(
@@ -341,19 +332,16 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, clip=(-100, 100))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, clip=(-100, 100))
         velocity_commands = ObsTerm(
-            func=mdp.generated_commands, clip=(-100, 100), params={"command_name": "base_velocity"}
+            func=mdp.gait_conditioned_base_velocity, clip=(-100, 100), params={
+                "command_name": "base_velocity",
+                "gait_command_name": "gait_id",
+                "stand_gait_id": 6,
+            }
         )
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-100, 100))
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
         joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
-        # height_scanner = ObsTerm(func=mdp.height_scan,
-        #     params={"sensor_cfg": SceneEntityCfg("height_scanner")},
-        #     clip=(-1.0, 5.0),
-        # )
-
-        # def __post_init__(self):
-        #     self.history_length = 5
 
     # privileged observations
     critic: CriticCfg = CriticCfg()
@@ -370,7 +358,7 @@ class RewardsCfg:
     # Eq.(6)
     efficiency_penalty = RewTerm(
         func=mdp.r_eta,
-        weight=-0.1,
+        weight=-1.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
             "use_dt_scaling": False,
@@ -381,7 +369,7 @@ class RewardsCfg:
     # Eq.(7)
     vcmd_tracking = RewTerm(
         func=mdp.r_vcmd,
-        weight=50.0,
+        weight=15.0,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
@@ -392,7 +380,7 @@ class RewardsCfg:
     # Eq.(8) - r_f will read env.beta_* references
     gait_tracking = RewTerm(
         func=mdp.r_f,
-        weight=-18.0,
+        weight=-10.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -404,7 +392,7 @@ class RewardsCfg:
     # Eq.(9) - r_stab will read env.beta_* references
     stability = RewTerm(
         func=mdp.r_stab,
-        weight=-1.0,
+        weight=-5.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -418,12 +406,6 @@ class RewardsCfg:
             "gait_command_name": "gait_id",
             "desired_gravity_b": [0.0, 0.0, -1.0],
         },
-    )
-
-    # Add a simple item to rewards.py or the configuration file.
-    alive_bonus = RewTerm(
-        func=alive_bonus_func,
-        weight=2.0
     )
 
 
@@ -504,5 +486,5 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         self.commands.base_velocity.resampling_time_range = (9999.0, 9999.0)
         self.commands.base_velocity.rel_standing_envs = 0.0
         self.commands.base_velocity.ranges = self.commands.base_velocity.ranges.replace(
-            lin_vel_x=(0.0, 0.0), lin_vel_y=(0.0, 0.0), ang_vel_z=(0.0, 0.0)
+            lin_vel_x=(1.2, 1.2), lin_vel_y=(0.0, 0.0), ang_vel_z=(0.0, 0.0)
         )

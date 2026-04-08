@@ -10,6 +10,7 @@ except ImportError:
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
+from .observations import gait_conditioned_base_velocity
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -31,20 +32,19 @@ def r_eta(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     use_dt_scaling: bool = False,
-    clamp_jerk: float | None = 5.0 
+    clamp_jerk: float | None = 5.0
 ) -> torch.Tensor:
     """Efficiency penalty (aligned with paper Eq. 6, with normalization)."""
     asset: Articulation = env.scene[asset_cfg.name]
     num_dof = len(asset_cfg.joint_ids)
 
-    qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]            
-    qfrc = asset.data.applied_torque[:, asset_cfg.joint_ids]        
+    qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]        
+    qfrc = asset.data.applied_torque[:, asset_cfg.joint_ids]      
 
     # get Action
-    if hasattr(env, "action_manager") and hasattr(env.action_manager, "action"):
-        q_star = env.action_manager.action
-    else:
-        q_star = env.action_buf  # Fallback
+    q_star = None
+    term = env.action_manager.get_term("JointPositionAction")
+    q_star = term.processed_actions
 
     if q_star.shape[-1] != num_dof:
         q_star = q_star[:, asset_cfg.joint_ids]
@@ -80,10 +80,12 @@ def r_eta(
 
     # 3. Action rate: Action difference
     dact = q_star - env._paper_eta_action_prev
-    dact_term = torch.mean(dact * dact, dim=-1) 
+    # dact_term = torch.mean(dact * dact, dim=-1)
+    dact_term = torch.sum(dact * dact, dim=-1)
 
     # The sum of formulas in the paper
-    total_eta = jerk_term + tau_term + dact_term
+    # total_eta = jerk_term + tau_term + dact_term
+    total_eta = dact_term
 
     # --- debug ---
     if env.common_step_counter % 200 == 0:
@@ -93,7 +95,11 @@ def r_eta(
         print(f"  - Torque (mean sq): {tau_term[0].item():.4f}")
         print(f"  - Action (mean sq): {dact_term[0].item():.4f}")
         print(f"  >> Total Raw:       {total_eta[0].item():.4f}")
-        print(f"  >> Weighted Score (*-0.1): {total_eta[0].item() * -0.1:.4f}")
+        print(f"  >> Weighted Score (*-1.5): {total_eta[0].item() * -1.5:.4f}")
+        print("Using processed_actions:", hasattr(term, "processed_actions"))
+        print("q_star shape:", q_star.shape)
+        print("q_star sample:", q_star[0])
+        print("active_terms:", env.action_manager.active_terms)
         print("-" * 30)
 
     # Update Buffers
@@ -117,7 +123,13 @@ def r_vcmd(
 ) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
 
-    v_cmd = env.command_manager.get_command(command_name)  # (N,3) [vx_cmd, vy_cmd, wz_cmd]
+    # v_cmd = env.command_manager.get_command(command_name)  # (N,3) [vx_cmd, vy_cmd, wz_cmd]
+    v_cmd = gait_conditioned_base_velocity(
+        env,
+        command_name=command_name,
+        gait_command_name="gait_id",
+        stand_gait_id=6,
+    )
 
     v_xy = asset.data.root_lin_vel_b[:, :2]                # (N,2) body frame
     w_z = asset.data.root_ang_vel_b[:, 2:3] * wz_scale     # (N,1)
@@ -225,15 +237,6 @@ def r_f(
 
 # --------------------------------------------------------
 # r_stab (Eq. 9): stability
-# r_stab = sum_{i=1..F} ||p_dot_i||^2 + ||omega_xy||^2
-#          + psi(||alpha R_B - alpha R_B^des||^2)
-#          - psi((zB - zNom)^2)
-#          + ||q_hip||^2                                  :contentReference[oaicite:5]{index=5}
-#
-# We implement "alpha R_B" using gravity direction in body frame:
-#   alpha=[0,0,1] selects the vertical axis; projected_gravity_b is commonly used
-#   for this in simulators (it’s already a body-frame vector reflecting orientation).
-# You pass desired_gravity_b for alpha R_B^des.
 # -----------------------------------------------------------------------------
 
 
@@ -306,8 +309,19 @@ def r_stab(
     qhip = asset.data.joint_pos[:, hip_joint_ids]
     hip_term = torch.sum(qhip * qhip, dim=-1)
 
+    # -------------------------------------------------
+    # stand-only extra height penalty
+    # only active when gait_id == 6
+    # -------------------------------------------------
+    stand_mask = (gait_ids == 6).float()
+    stand_target_height = 0.32
+
+    # stand_height_err = (zB - stand_target_height) ** 2
+    stand_height_err = torch.abs(zB - stand_target_height)
+    stand_height_term = stand_mask * stand_height_err * 3.0
+
     # return
-    total_stab_error = slip_term + omega_term + orient_term + height_term + hip_term
+    total_stab_error = slip_term + omega_term + orient_term + height_term + hip_term + stand_height_term
 
     # debug (w_stab = -1.0)
     if env.common_step_counter % 200 == 0:
@@ -320,5 +334,6 @@ def r_stab(
         print(f"  >> Total Raw Error: {total_stab_error[0].item():.4f}")
         print(f"  >> Weighted Score (*-1.0): {total_stab_error[0].item() * -1.0:.4f}")
         print(f"      -> Detail: zB={zB[0].item():.3f}, Height_Err={height_term[0].item():.3f}, Orient_Err={orient_term[0].item():.3f}")
+        # print(f"  4b. StandHeight(站立高度附加): {stand_height_term[0].item():.4f}")
 
     return total_stab_error
