@@ -310,13 +310,6 @@ class ObservationsCfg:
             clip=(-100, 100)
         )
 
-        # 3. velocity_commands remain unchanged
-        # velocity_commands = ObsTerm(
-        #     func=mdp.generated_commands, 
-        #     params={"command_name": "base_velocity"},
-        #     clip=(-100, 100)
-        # )
-
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
@@ -399,10 +392,7 @@ class RewardsCfg:
                 body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
             ),
             "hip_joint_ids": [1, 0, 3, 2],  # Hip joint index in Go2
-            # "z_nom": abs(GAIT_CONFIGS[CURRENT_GAIT_ID]["z_nom"]),
-            # Dynamically retrieve the script table and let r_stab retrieve its values.
             "gait_table": GAIT_CONFIGS, 
-            # "gait_id": CURRENT_GAIT_ID,
             "gait_command_name": "gait_id",
             "desired_gravity_b": [0.0, 0.0, -1.0],
         },
@@ -424,9 +414,7 @@ class TerminationsCfg:
 @configclass
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
-
-    # terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
-    # lin_vel_cmd_levels = CurrTerm(mdp.lin_vel_cmd_levels)
+    
     pass
 
 

@@ -186,12 +186,9 @@ def beta_l_raibert(
         robot.data.root_lin_vel_w.unsqueeze(-1)
     ).squeeze(-1)                                                           # (N,3)
 
-    yaw_vel = robot.data.root_ang_vel_b[:, 2:3]                             # (N,1)
-
     # 10) hip base
     hip_base = env._raibert_hip_pos_B_static.clone()                        # (N,4,3)
-    is_bound_1d = (gait_ids == 0)                                           # (N,)
-
+    
     # 11) Raibert foot placement
     twist_x = torch.zeros_like(v_B[:, 0:1])
     twist_y = torch.zeros_like(v_B[:, 0:1])
@@ -217,51 +214,12 @@ def beta_l_raibert(
         hip_base[..., 1] + y_limit,
     )
 
-    # 13) Bound-specific geometry constraint
-    # if is_bound_1d.any():
-    #     # Use the current dx4, but restrict the hind legs from being further forward than the forelegs.
-    #     front_dx = dx4[is_bound_1d, 0]
-    #     rear_dx = dx4[is_bound_1d, 0]
-
-    #     # Geometric constraint: Hind leg forward movement <= Foreleg forward movement
-    #     rear_dx = torch.minimum(rear_dx, front_dx)
-
-    #     # forelegs
-    #     new_p[is_bound_1d, 0, 0] = hip_base[is_bound_1d, 0, 0] + front_dx
-    #     new_p[is_bound_1d, 1, 0] = hip_base[is_bound_1d, 1, 0] + front_dx
-
-    #     # hind legs
-    #     new_p[is_bound_1d, 2, 0] = hip_base[is_bound_1d, 2, 0] + rear_dx
-    #     new_p[is_bound_1d, 3, 0] = hip_base[is_bound_1d, 3, 0] + rear_dx
-
-    #     # y maintains left-right symmetry
-    #     new_p[is_bound_1d, 0, 1] = hip_base[is_bound_1d, 0, 1] + dy4[is_bound_1d, 0]
-    #     new_p[is_bound_1d, 1, 1] = hip_base[is_bound_1d, 1, 1] + dy4[is_bound_1d, 0]
-    #     new_p[is_bound_1d, 2, 1] = hip_base[is_bound_1d, 2, 1] + dy4[is_bound_1d, 0]
-    #     new_p[is_bound_1d, 3, 1] = hip_base[is_bound_1d, 3, 1] + dy4[is_bound_1d, 0]
-
     # 14) liftoff detection
     if not hasattr(env, "_raibert_prev_c"):
         env._raibert_prev_c = c_ref.clone()
 
     prev_c = env._raibert_prev_c
     liftoff = (prev_c > 0.5) & (c_ref < 0.5)
-
-    # Bound: pair liftoff
-    # if is_bound_1d.any():
-    #     front_liftoff = (
-    #         ((prev_c[:, 0] > 0.5) | (prev_c[:, 1] > 0.5))
-    #         & ((c_ref[:, 0] < 0.5) & (c_ref[:, 1] < 0.5))
-    #     )
-    #     rear_liftoff = (
-    #         ((prev_c[:, 2] > 0.5) | (prev_c[:, 3] > 0.5))
-    #         & ((c_ref[:, 2] < 0.5) & (c_ref[:, 3] < 0.5))
-    #     )
-
-    #     liftoff[is_bound_1d, 0] = front_liftoff[is_bound_1d]
-    #     liftoff[is_bound_1d, 1] = front_liftoff[is_bound_1d]
-    #     liftoff[is_bound_1d, 2] = rear_liftoff[is_bound_1d]
-    #     liftoff[is_bound_1d, 3] = rear_liftoff[is_bound_1d]
 
     env._raibert_p_ref_B = torch.where(
         liftoff.unsqueeze(-1),
@@ -270,13 +228,6 @@ def beta_l_raibert(
     )
     env._raibert_prev_c = c_ref.clone()
 
-    # 15) swing uses locked target, stance uses dynamic target
-    # stance_mask = (c_ref > 0.5).unsqueeze(-1)
-    # p_ref_B_final = torch.where(
-    #     stance_mask,
-    #     new_p,                   # stance: dynamic support reference
-    #     env._raibert_p_ref_B,    # swing: locked target
-    # )
     p_ref_B_final = env._raibert_p_ref_B.clone()
 
     # 16) swing height
@@ -450,7 +401,6 @@ def robot_state_s(
     # gait one-hot
     current_gait_command = env.command_manager.get_command(gait_command_name)
     current_gait_id = current_gait_command[:, 0].long()
-    gait_obs = torch.nn.functional.one_hot(current_gait_id, num_classes=8).float()
 
     # =========================================================
     # 4) Read the beta cache; if this step hasn't been performed yet, perform the calculation again.
@@ -486,63 +436,10 @@ def robot_state_s(
     force_norm = torch.norm(forces, dim=-1)                      # (N, n_contact_bodies)
 
     # =========================================================
-    # First 1000 steps: Print each of the four legs individually for z-tracking.
-    # =========================================================
-    if env.common_step_counter < 1000 and hasattr(env, "beta_p_ref_B") and hasattr(env, "beta_contact_ref"):
-        print(f"\n[STEP {env.common_step_counter}] FOOT Z (BODY + WORLD)")
-        print(f"{'Leg':<5} | {'real_z_B':<8} | {'ref_z_B':<8} | {'real_z_W':<8} | {'dz_B':<8} | {'ref_c':<5} | {'real_c':<6}")
-        print("-" * 80)
-
-        # --- world frame foot pos ---
-        foot_pos_w = robot.data.body_pos_w[:, foot_body_ids, :]   # (N,4,3)
-
-        for i, leg in enumerate(["FR", "FL", "RR", "RL"]):
-            # --- BODY frame ---
-            real_z_B = real_foot_pos_b[0, i, 2].item()
-            ref_z_B = env.beta_p_ref_B[0, i, 2].item()
-            dz_B = real_z_B - ref_z_B
-
-            # --- WORLD frame ---
-            real_z_W = foot_pos_w[0, i, 2].item()
-
-            ref_c = int(env.beta_contact_ref[0, i].item())
-            real_c = int(foot_contact[0, i].item())
-
-            print(f"{leg:<5} | {real_z_B:+.3f}  | {ref_z_B:+.3f}  | {real_z_W:+.3f}  | {dz_B:+.3f}  | {ref_c:<5} | {real_c:<6}")
-
-        # -------------------------
-        # REAR JOINT DEBUG（只打印一次，不要放在for里面）
-        # -------------------------
-        print("\n[REAR JOINT CHECK]")
-        rr_pos = joint_pos[0, 6:9].detach().cpu().numpy().round(3)
-        rl_pos = joint_pos[0, 9:12].detach().cpu().numpy().round(3)
-        rr_vel = joint_vel[0, 6:9].detach().cpu().numpy().round(3)
-        rl_vel = joint_vel[0, 9:12].detach().cpu().numpy().round(3)
-
-        print("RR joint_pos [hip, thigh, calf]:", rr_pos)
-        print("RL joint_pos [hip, thigh, calf]:", rl_pos)
-        print("RR joint_vel [hip, thigh, calf]:", rr_vel)
-        print("RL joint_vel [hip, thigh, calf]:", rl_vel)
-
-        # -------------------------
-        # 姿态 & 后腿高度
-        # -------------------------
-        roll_indicator = projected_gravity[0, 1].item()
-
-        print(
-            f"[STEP {env.common_step_counter}] "
-            f"grav_y={roll_indicator:+.3f} | "
-            f"RR_z_B={real_foot_pos_b[0,2,2].item():+.3f} ref={env.beta_p_ref_B[0,2,2].item():+.3f} | "
-            f"RR_z_W={foot_pos_w[0,2,2].item():+.3f} | "
-            f"RL_z_B={real_foot_pos_b[0,3,2].item():+.3f} ref={env.beta_p_ref_B[0,3,2].item():+.3f} | "
-            f"RL_z_W={foot_pos_w[0,3,2].item():+.3f}"
-        )
-
-    # =========================================================
     # 6) debug：every 200 steps
     # =========================================================
     if env.common_step_counter % 200 == 0:
-        print("\n" + "🏠" * 10 + f" [DEBUG STEP: {env.common_step_counter}] 机身系校验 " + "🏠" * 10)
+        print("\n" + "🏠" * 10 + f" [DEBUG STEP: {env.common_step_counter}] body check " + "🏠" * 10)
         print(f"Base Height: {base_height[0].item():.3f} | Gravity_B: {projected_gravity[0].cpu().numpy().round(2)}")
         print(f"Lin Vel (v_B):     {lin_vel[0].cpu().numpy().round(3)}")
         print("[contact_foot_ids (FR,FL,RR,RL)]", contact_foot_ids)

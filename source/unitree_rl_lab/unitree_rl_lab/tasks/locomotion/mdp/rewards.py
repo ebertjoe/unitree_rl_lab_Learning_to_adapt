@@ -38,8 +38,8 @@ def r_eta(
     asset: Articulation = env.scene[asset_cfg.name]
     num_dof = len(asset_cfg.joint_ids)
 
-    qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]        
-    qfrc = asset.data.applied_torque[:, asset_cfg.joint_ids]      
+    qvel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    qfrc = asset.data.applied_torque[:, asset_cfg.joint_ids]
 
     # get Action
     q_star = None
@@ -84,8 +84,8 @@ def r_eta(
     dact_term = torch.sum(dact * dact, dim=-1)
 
     # The sum of formulas in the paper
-    # total_eta = jerk_term + tau_term + dact_term
-    total_eta = dact_term
+    total_eta = 0.01 * jerk_term + 0.0001 * tau_term + dact_term
+    # total_eta = dact_term
 
     # --- debug ---
     if env.common_step_counter % 200 == 0:
@@ -251,7 +251,7 @@ def r_stab(
 ) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
     device = env.device
-    
+
     # -------------------------
     # A) Dynamically obtain vectorized gait parameters
     # -------------------------
@@ -326,14 +326,13 @@ def r_stab(
     # debug (w_stab = -1.0)
     if env.common_step_counter % 200 == 0:
         print(f"[STAB DETAIL | Step {env.common_step_counter}]")
-        print(f"  1. Slip (足端滑行): {slip_term[0].item():.4f}")
-        print(f"  2. Omega (角速度): {omega_term[0].item():.4f}")
-        print(f"  3. Orient (姿态):  {orient_term[0].item():.4f}")
-        print(f"  4. Height (高度):  {height_term[0].item():.4f} (zB={zB[0].item():.3f})")
-        print(f"  5. Hip (髋关节):   {hip_term[0].item():.4f}")
+        print(f"  1. Slip: {slip_term[0].item():.4f}")
+        print(f"  2. Omega: {omega_term[0].item():.4f}")
+        print(f"  3. Orient:  {orient_term[0].item():.4f}")
+        print(f"  4. Height:  {height_term[0].item():.4f} (zB={zB[0].item():.3f})")
+        print(f"  5. Hip:   {hip_term[0].item():.4f}")
         print(f"  >> Total Raw Error: {total_stab_error[0].item():.4f}")
         print(f"  >> Weighted Score (*-1.0): {total_stab_error[0].item() * -1.0:.4f}")
         print(f"      -> Detail: zB={zB[0].item():.3f}, Height_Err={height_term[0].item():.3f}, Orient_Err={orient_term[0].item():.3f}")
-        # print(f"  4b. StandHeight(站立高度附加): {stand_height_term[0].item():.4f}")
 
     return total_stab_error

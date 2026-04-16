@@ -276,8 +276,6 @@ def main():
     except Exception as e:
         print("[WARN] Cannot import get_go2_hip_positions_B from observations. Will use fallback hips.", e)
         from unitree_rl_lab.tasks.locomotion.mdp.observations import beta_l_raibert
-        HAS_GO2_HIP = False
-        get_go2_hip_positions_B = None  # type: ignore
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
@@ -415,7 +413,7 @@ def main():
             def on_ui_click(gait_id):
                 # Force modification of command values ​​in all environments
                 env.unwrapped.command_manager._terms["gait_id"].value_command[:] = float(gait_id)
-                print(f"\033[93m[UI 切换] 已强制设置全场步态为: {gait_id} ({gait_names[gait_id]})\033[0m")
+                print(f"\033[93m[UI Switch] Gait has been forcibly set to: {gait_id} ({gait_names[gait_id]})\033[0m")
 
             # Button layout (two columns)
             for i in range(0, 8, 2):
@@ -441,7 +439,7 @@ def main():
             
             if sim_step_count % 100 == 0:   # Print once every 100 steps
                 unique_ids = torch.unique(gait_ids)
-                print("\033[93m当前所有 env 的 gait:", unique_ids.cpu().numpy(), "\033[0m")
+                print("\033[93mcurrent gait for all environments:", unique_ids.cpu().numpy(), "\033[0m")
            
             if sim_step_count % 50 == 0:
                 current_id = int(gait_ids[env_id].item())
