@@ -190,15 +190,31 @@ def beta_l_raibert(
     hip_base = env._raibert_hip_pos_B_static.clone()                        # (N,4,3)
     
     # 11) Raibert foot placement
-    twist_x = torch.zeros_like(v_B[:, 0:1])
-    twist_y = torch.zeros_like(v_B[:, 0:1])
+    
+    twist_x = torch.zeros_like(v_cmd[:, 0:1])
+    twist_y = torch.zeros_like(v_cmd[:, 0:1])
 
     Tst = threshold * period
     dx4 = 0.5 * Tst * v_B[:, 0:1] + kx * (v_B[:, 0:1] - v_cmd[:, 0:1]) + twist_x
     dy4 = 0.5 * Tst * v_B[:, 1:2] + ky * (v_B[:, 1:2] - v_cmd[:, 1:2]) - twist_y
 
+    BOUND_FRONT_SCALE = 1.4
+
+    is_bound = (gait_ids == 0).float().unsqueeze(1)
+    front_mask = torch.zeros(num_envs, 4, device=device)
+    front_mask[:, 0] = 1.0  # FR
+    front_mask[:, 1] = 1.0  # FL
+    rear_mask = 1.0 - front_mask
+
+    per_leg_scale = (
+        rear_mask
+        + front_mask * (1.0 + is_bound * (BOUND_FRONT_SCALE - 1.0))
+    )  # (N,4)
+
+    dx4_expanded = dx4.expand(-1, 4) * per_leg_scale
+
     new_p = hip_base.clone()
-    new_p[..., 0] += dx4
+    new_p[..., 0] += dx4_expanded
     new_p[..., 1] += dy4
     new_p[..., 2] = z_nominal.expand(-1, 4)
 
@@ -592,23 +608,22 @@ def robot_state_s(
     refFootY = g_reshaped[:, :, 2]
     refFootZ = g_reshaped[:, :, 3]
 
-    # =========================================================
-    # 10) final obs
-    # =========================================================
-    obs_69 = torch.cat([
+    # Cache Raibert references for reward computation
+    env.raibert_ref_foot_pos = torch.stack([refFootX, refFootY, refFootZ], dim=-1)  # (N, 4, 3)
+    env.raibert_des_contact   = desFeetContact  # (N, 4)
+
+    obs = torch.cat([
         projected_gravity,  # 3
         joint_pos,          # 12
         ang_vel,            # 3
         joint_vel,          # 12
-        lin_vel,            # 3
         vel_cmd,            # 3
-        joint_torques,      # 12
         foot_contact,       # 4
-        base_height,        # 1
         desFeetContact,     # 4
         refFootZ,           # 4
         refFootX,           # 4
-        refFootY            # 4
-    ], dim=-1)
+        refFootY,           # 4
+    ], dim=-1)              # = 68
 
-    return obs_69
+
+    return obs

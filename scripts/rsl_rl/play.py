@@ -425,6 +425,8 @@ def main():
             ui.Label("Note: All envs will switch simultaneously.", style={"font_size": 10, "color": 0x99FFFFFF})
 
     gait_table = env_cfg.observations.policy.state_s.params["gait_table"]
+    env.unwrapped.command_manager._terms["gait_id"].cfg.params["range"] = (0, 0)
+    env.unwrapped.command_manager._terms["gait_id"].value_command[:] = 0.0
     while simulation_app.is_running():
         start_time = time.time()
 
@@ -432,6 +434,22 @@ def main():
             actions = policy(obs)
             obs, _, _, _ = env.step(actions)
             sim_step_count += 1
+
+            if sim_step_count % 50 == 0:
+                v_B_now   = robot.data.root_lin_vel_b[env_id]
+                cmd_now   = env.unwrapped.command_manager.get_command("base_velocity")[env_id]
+                vx_now    = float(v_B_now[0].item())
+                vy_now    = float(v_B_now[1].item())
+                vcx_now   = float(cmd_now[0].item())
+                vcy_now   = float(cmd_now[1].item())
+                base_z    = float(robot.data.root_pos_w[env_id, 2].item())
+                gait_id_now = int(env.unwrapped.command_manager.get_command("gait_id")[env_id].item())
+                gait_name = {0:"bound",1:"trot",2:"hop",3:"amble",4:"pronk",5:"limp",6:"stand",7:"run"}.get(gait_id_now,"?")
+                print(f"[step {sim_step_count:4d}] gait={gait_name}  "
+                    f"v_cmd=[{vcx_now:+.2f},{vcy_now:+.2f}]  "
+                    f"v_gt=[{vx_now:+.2f},{vy_now:+.2f}]  "
+                    f"v_diff=[{vx_now-vcx_now:+.2f},{vy_now-vcy_now:+.2f}]  "
+                    f"h={base_z:.3f}")
 
             # --- Added: Get and print gait ID ---
             # Retrieve the gait_id of all current environments from CommandManager.

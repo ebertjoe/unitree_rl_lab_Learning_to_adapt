@@ -17,8 +17,8 @@ from isaaclab.utils import configclass
 
 from unitree_rl_lab.assets.robots import unitree_actuators
 
-UNITREE_MODEL_DIR = "/home/zhuoya/unitree_model"  # Replace with the actual path to your unitree_model directory
-UNITREE_ROS_DIR = "/home/zhuoya/unitree_ros"  # Replace with the actual path to your unitree_ros package
+UNITREE_MODEL_DIR = "/home/yulong/student_projects/jonasebert-thesis/unitree_model"                                                                                 
+UNITREE_ROS_DIR = "/home/yulong/unitree_ros"  
 
 
 @configclass

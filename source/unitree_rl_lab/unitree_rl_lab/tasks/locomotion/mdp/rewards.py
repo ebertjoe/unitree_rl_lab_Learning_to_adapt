@@ -139,7 +139,7 @@ def r_vcmd(
     v_cmd2[:, 2] = v_cmd2[:, 2] * wz_scale
 
     err2 = torch.sum((v - v_cmd2) ** 2, dim=-1)            # ||v - vcmd||^2
-    reward = psi(err2)
+    reward = psi(err2 * 4.0)
 
     # Debug Printing (w_vcmd = 50.0)
     if env.common_step_counter % 200 == 0:
@@ -336,3 +336,59 @@ def r_stab(
         print(f"      -> Detail: zB={zB[0].item():.3f}, Height_Err={height_term[0].item():.3f}, Orient_Err={orient_term[0].item():.3f}")
 
     return total_stab_error
+
+def foot_trajectory_tracking(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """
+    Penalize deviation of actual foot positions from Raibert reference
+    positions, but only during swing phase (desFeetContact == 0).
+    """
+    # get actual foot positions in world frame
+    asset = env.scene[asset_cfg.name]
+    contact_sensor = env.scene[sensor_cfg.name]
+
+    # foot positions: get from body state
+    foot_body_ids = asset_cfg.body_ids  
+    foot_pos_w = asset.data.body_pos_w[:, foot_body_ids, :] 
+
+    # reference positions from Raibert (cached by observations.py)
+    ref_pos = env.raibert_ref_foot_pos  
+    des_contact = env.raibert_des_contact  
+
+    # only penalize during swing phase
+    swing_mask = (des_contact < 0.5).float() 
+
+    # L2 distance between actual and reference foot position
+    dist = torch.norm(foot_pos_w - ref_pos, dim=-1) 
+
+    # apply swing mask and sum over legs
+    dist = torch.clamp(dist, max=0.5)
+    return (dist * swing_mask).sum(dim=-1)
+
+def gait_conditioned_symmetry(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize left-right joint asymmetry for symmetric gaits only."""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    
+    # only enforce for symmetric gaits: trot(1), bound(0), hop(2), pronk(4), run(7)
+    gait_id = env.command_manager.get_command("gait_id").squeeze(-1)
+    symmetric_mask = torch.isin(
+        gait_id,
+        torch.tensor([0, 2, 4], device=env.device)
+    ).float() 
+
+    joint_pos = asset.data.joint_pos  
+    right = joint_pos[:, [0, 1, 2, 6, 7,  8]]  
+    left  = joint_pos[:, [3, 4, 5, 9, 10, 11]] 
+
+    symmetry_error = torch.sum((left - right) ** 2, dim=-1)
+    if torch.any(torch.isnan(symmetry_error)) or torch.any(torch.isinf(symmetry_error)):
+        print("NaN/Inf in gait_conditioned_symmetry!")
+        return torch.zeros(env.num_envs, device=env.device)
+    return torch.clamp(symmetry_error * symmetric_mask, max=2.0)
+

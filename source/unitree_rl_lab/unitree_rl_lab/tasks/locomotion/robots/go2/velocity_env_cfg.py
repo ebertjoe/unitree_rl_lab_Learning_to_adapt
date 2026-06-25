@@ -335,6 +335,7 @@ class ObservationsCfg:
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
         joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
+        base_height = ObsTerm(func=mdp.base_pos_z, clip=(-100, 100))
 
     # privileged observations
     critic: CriticCfg = CriticCfg()
@@ -397,6 +398,37 @@ class RewardsCfg:
             "desired_gravity_b": [0.0, 0.0, -1.0],
         },
     )
+
+    body_height = RewTerm(
+        func=mdp.base_height_l2,
+        weight=-2.5,
+        params={
+            "target_height": 0.32,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+
+    foot_trajectory = RewTerm(
+        func=mdp.foot_trajectory_tracking,
+        weight=-1.3,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
+            ),
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
+            ),
+        },
+    )
+
+    # gait_symmetry = RewTerm(
+    #     func=mdp.gait_conditioned_symmetry,
+    #     weight=-8.0,
+    #     params={"asset_cfg": SceneEntityCfg("robot")},
+    # )
+
 
 
 @configclass

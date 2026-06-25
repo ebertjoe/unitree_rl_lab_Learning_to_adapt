@@ -12,7 +12,7 @@ class UnitreeGo2PaperPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     seed = 1
     num_steps_per_env = 24
     # 论文中提到训练 20,000 次迭代
-    max_iterations = 20000
+    max_iterations = 10000
     save_interval = 200
     experiment_name = "unitree_go2_locomotion_paper"
 
