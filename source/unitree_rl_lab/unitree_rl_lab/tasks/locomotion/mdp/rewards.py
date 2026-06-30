@@ -305,6 +305,25 @@ def r_stab(
     zB = asset.data.root_pos_w[:, 2]
     height_term = 1 - psi((zB - z_nom_t) ** 2)
 
+    # -------------------------------------------------
+    # Flight-phase gating (NEW)
+    # -------------------------------------------------
+    # When the Raibert reference schedules ALL FOUR legs in swing
+    # simultaneously (a genuine flight/aerial phase, e.g. mid-cycle in
+    # bound/pronk/hop), the body is expected to be in ballistic motion:
+    # height and orientation will naturally deviate from the stance
+    # nominal values. Without gating, height_term/orient_term spike during
+    # exactly the window the policy is supposed to risk, making flight
+    # phases reward-negative and teaching the policy to keep a foot down
+    # at all times (suppressing aerial gaits like bound entirely).
+    #
+    # slip_term already does NOT need this gating: it's masked by `stance`
+    # and naturally goes to zero when no legs are in stance.
+    in_flight_ref = (~stance).all(dim=-1).float()  # (N,) 1.0 if all 4 legs scheduled swing
+
+    height_term = (1.0 - in_flight_ref) * height_term
+    orient_term = (1.0 - in_flight_ref) * orient_term
+
     # Hip joint
     qhip = asset.data.joint_pos[:, hip_joint_ids]
     hip_term = torch.sum(qhip * qhip, dim=-1)
@@ -331,6 +350,7 @@ def r_stab(
         print(f"  3. Orient:  {orient_term[0].item():.4f}")
         print(f"  4. Height:  {height_term[0].item():.4f} (zB={zB[0].item():.3f})")
         print(f"  5. Hip:   {hip_term[0].item():.4f}")
+        print(f"  6. In-flight (ref, env 0): {bool(in_flight_ref[0].item())}")
         print(f"  >> Total Raw Error: {total_stab_error[0].item():.4f}")
         print(f"  >> Weighted Score (*-1.0): {total_stab_error[0].item() * -1.0:.4f}")
         print(f"      -> Detail: zB={zB[0].item():.3f}, Height_Err={height_term[0].item():.3f}, Orient_Err={orient_term[0].item():.3f}")
@@ -391,4 +411,3 @@ def gait_conditioned_symmetry(
         print("NaN/Inf in gait_conditioned_symmetry!")
         return torch.zeros(env.num_envs, device=env.device)
     return torch.clamp(symmetry_error * symmetric_mask, max=2.0)
-
