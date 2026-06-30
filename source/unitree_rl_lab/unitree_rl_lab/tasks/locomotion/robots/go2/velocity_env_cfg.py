@@ -363,7 +363,7 @@ class RewardsCfg:
     # Eq.(7)
     vcmd_tracking = RewTerm(
         func=mdp.r_vcmd,
-        weight=15.0,
+        weight=10.0,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
@@ -410,7 +410,7 @@ class RewardsCfg:
 
     foot_trajectory = RewTerm(
         func=mdp.foot_trajectory_tracking,
-        weight=-6.0,
+        weight=-3.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
