@@ -410,7 +410,7 @@ class RewardsCfg:
 
     foot_trajectory = RewTerm(
         func=mdp.foot_trajectory_tracking,
-        weight=-3.0,
+        weight=-6.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
