@@ -408,20 +408,20 @@ class RewardsCfg:
         },
     )
 
-    foot_trajectory = RewTerm(
-        func=mdp.foot_trajectory_tracking,
-        weight=-6.0,
-        params={
-            "sensor_cfg": SceneEntityCfg(
-                "contact_forces",
-                body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
-            ),
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
-            ),
-        },
-    )
+    # foot_trajectory = RewTerm(
+    #     func=mdp.foot_trajectory_tracking,
+    #     weight=-6.0,
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
+    #         ),
+    #         "asset_cfg": SceneEntityCfg(
+    #             "robot",
+    #             body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
+    #         ),
+    #     },
+    # )
 
     # gait_symmetry = RewTerm(
     #     func=mdp.gait_conditioned_symmetry,
