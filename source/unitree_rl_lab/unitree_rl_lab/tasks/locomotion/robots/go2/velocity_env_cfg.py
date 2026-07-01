@@ -399,14 +399,14 @@ class RewardsCfg:
         },
     )
 
-    body_height = RewTerm(
-        func=mdp.base_height_l2,
-        weight=-1.5,
-        params={
-            "target_height": 0.32,
-            "asset_cfg": SceneEntityCfg("robot"),
-        },
-    )
+    # body_height = RewTerm(
+    #     func=mdp.base_height_l2,
+    #     weight=-1.5,
+    #     params={
+    #         "target_height": 0.32,
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #     },
+    # )
 
     # foot_trajectory = RewTerm(
     #     func=mdp.foot_trajectory_tracking,
