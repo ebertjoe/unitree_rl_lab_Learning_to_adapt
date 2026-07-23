@@ -374,7 +374,7 @@ class RewardsCfg:
     # Eq.(8) - r_f will read env.beta_* references
     gait_tracking = RewTerm(
         func=mdp.r_f,
-        weight=-12.5,
+        weight=-15.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
