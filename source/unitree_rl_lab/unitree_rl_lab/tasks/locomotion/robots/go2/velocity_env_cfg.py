@@ -335,7 +335,6 @@ class ObservationsCfg:
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-100, 100))
         joint_effort = ObsTerm(func=mdp.joint_effort, scale=0.01, clip=(-100, 100))
         last_action = ObsTerm(func=mdp.last_action, clip=(-100, 100))
-        base_height = ObsTerm(func=mdp.base_pos_z, clip=(-100, 100))
 
     # privileged observations
     critic: CriticCfg = CriticCfg()
@@ -363,7 +362,7 @@ class RewardsCfg:
     # Eq.(7)
     vcmd_tracking = RewTerm(
         func=mdp.r_vcmd,
-        weight=8.0,
+        weight=15.0,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
@@ -374,7 +373,7 @@ class RewardsCfg:
     # Eq.(8) - r_f will read env.beta_* references
     gait_tracking = RewTerm(
         func=mdp.r_f,
-        weight=-17.5,
+        weight=-10.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -386,7 +385,7 @@ class RewardsCfg:
     # Eq.(9) - r_stab will read env.beta_* references
     stability = RewTerm(
         func=mdp.r_stab,
-        weight=-8.0,
+        weight=-5.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -398,37 +397,6 @@ class RewardsCfg:
             "desired_gravity_b": [0.0, 0.0, -1.0],
         },
     )
-
-    # body_height = RewTerm(
-    #     func=mdp.base_height_l2,
-    #     weight=-1.5,
-    #     params={
-    #         "target_height": 0.32,
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #     },
-    # )
-
-    # foot_trajectory = RewTerm(
-    #     func=mdp.foot_trajectory_tracking,
-    #     weight=-6.0,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces",
-    #             body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
-    #         ),
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
-    #         ),
-    #     },
-    # )
-
-    # gait_symmetry = RewTerm(
-    #     func=mdp.gait_conditioned_symmetry,
-    #     weight=-8.0,
-    #     params={"asset_cfg": SceneEntityCfg("robot")},
-    # )
-
 
 
 @configclass
