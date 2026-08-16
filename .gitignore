@@ -73,3 +73,24 @@ datasets
 
 # Mimic
 *.npz
+
+# --- Trainings-Artefakte ---
+outputs/
+plots/
+sweep/results/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# --- Isaac Sim / Omniverse ---
+*.usda.autosave
+.thumbs/
+kit_*.log
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+.DS_Store
