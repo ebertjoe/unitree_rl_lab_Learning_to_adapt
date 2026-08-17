@@ -595,14 +595,14 @@ def robot_state_s(
     # =========================================================
     # 10) final obs
     # =========================================================
-    obs_68 = torch.cat([
+    obs_56 = torch.cat([
         projected_gravity,  # 3
         joint_pos,          # 12
         ang_vel,            # 3
         joint_vel,          # 12
         lin_vel,            # 3
         vel_cmd,            # 3
-        joint_torques,      # 12
+        #joint_torques,      # 12
         foot_contact,       # 4
         #base_height,        # 1
         desFeetContact,     # 4
@@ -611,4 +611,4 @@ def robot_state_s(
         refFootY            # 4
     ], dim=-1)
 
-    return obs_68
+    return obs_56
