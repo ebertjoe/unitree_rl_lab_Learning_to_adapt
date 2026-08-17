@@ -56,13 +56,12 @@ def beta_l_raibert(
 
     # 1) commands
     gait_ids = env.command_manager.get_command(gait_command_name).long().flatten()   # (N,)
-    # v_cmd = env.command_manager.get_command(command_name)                           # (N,3) [vx, vy, wz]
     v_cmd = gait_conditioned_base_velocity(
         env,
         command_name=command_name,
         gait_command_name=gait_command_name,
         stand_gait_id=6,
-    )
+    )                                                                                # (N,3) [vx, vy, wz]
 
     # 2) cache gait table
     if not hasattr(env, "_gait_table_tensors"):
@@ -99,7 +98,9 @@ def beta_l_raibert(
     target_period = env._gait_periods[gait_ids].unsqueeze(1)       # (N,1)
     threshold = env._gait_thresholds[gait_ids].unsqueeze(1)        # (N,1)
     offset = env._gait_offsets[gait_ids]                           # (N,4)
-    kx = ky = env._gait_ks[gait_ids].unsqueeze(1)                  # (N,1)
+    # NOTE: feedback gains are no longer used -- the foot placement is pure
+    # feedforward on v_cmd (see step 11). Kept here for gait-table compatibility.
+    # kx = ky = env._gait_ks[gait_ids].unsqueeze(1)                # (N,1)
     z_nominal_target = env._gait_znoms[gait_ids].unsqueeze(1)      # (N,1)
     x_limit = env._gait_xlims[gait_ids].unsqueeze(1)               # (N,1)
     y_limit = env._gait_ylims[gait_ids].unsqueeze(1)               # (N,1)
@@ -179,23 +180,19 @@ def beta_l_raibert(
     leg_phase = (global_phase + offset) % 1.0                               # (N,4)
     c_ref = (leg_phase < threshold).float()                                 # (N,4)
 
-    # 9) body velocities
-    # full rotation
-    v_B = torch.bmm(
-        R_WB.transpose(1, 2),
-        robot.data.root_lin_vel_w.unsqueeze(-1)
-    ).squeeze(-1)                                                           # (N,3)
+    # 9) (removed) measured body velocity -- the planner is now driven by v_cmd only,
+    #    matching the hardware loop, which has no base-velocity estimator.
 
     # 10) hip base
     hip_base = env._raibert_hip_pos_B_static.clone()                        # (N,4,3)
-    
-    # 11) Raibert foot placement
-    twist_x = torch.zeros_like(v_B[:, 0:1])
-    twist_y = torch.zeros_like(v_B[:, 0:1])
+
+    # 11) Raibert foot placement (feedforward on commanded velocity)
+    twist_x = torch.zeros_like(v_cmd[:, 0:1])
+    twist_y = torch.zeros_like(v_cmd[:, 0:1])
 
     Tst = threshold * period
-    dx4 = 0.5 * Tst * v_B[:, 0:1] + kx * (v_B[:, 0:1] - v_cmd[:, 0:1]) + twist_x
-    dy4 = 0.5 * Tst * v_B[:, 1:2] + ky * (v_B[:, 1:2] - v_cmd[:, 1:2]) - twist_y
+    dx4 = 0.5 * Tst * v_cmd[:, 0:1] + twist_x
+    dy4 = 0.5 * Tst * v_cmd[:, 1:2] - twist_y
 
     new_p = hip_base.clone()
     new_p[..., 0] += dx4
@@ -340,6 +337,7 @@ def robot_state_s(
     gait_command_name: str = "gait_id",
     gait_table: dict | None = None,
 ) -> torch.Tensor:
+    """53-dim observation (ablation: lin_vel, joint_torques and base_height removed)."""
     robot = env.scene[asset_cfg.name]
 
     logic_joint_names = [
@@ -359,13 +357,10 @@ def robot_state_s(
     # joint states
     joint_pos = robot.data.joint_pos[:, asset_cfg.joint_ids]          # (N,12)
     joint_vel = robot.data.joint_vel[:, asset_cfg.joint_ids]          # (N,12)
-    joint_torques = robot.data.applied_torque[:, asset_cfg.joint_ids]  # (N,12)
 
     # base states
     projected_gravity = robot.data.projected_gravity_b                # (N,3)
     ang_vel = robot.data.root_ang_vel_b                               # (N,3)
-    lin_vel = robot.data.root_lin_vel_b                               # (N,3)
-    base_height = robot.data.root_pos_w[:, 2:3]                       # (N,1)
 
     # =========================================================
     # 2) body ids
@@ -439,9 +434,13 @@ def robot_state_s(
     # 6) debug：every 200 steps
     # =========================================================
     if env.common_step_counter % 200 == 0:
+        # debug-only quantities -- deliberately NOT part of the observation
+        base_height_dbg = robot.data.root_pos_w[:, 2:3]          # (N,1)
+        lin_vel_dbg = robot.data.root_lin_vel_b                  # (N,3)
+
         print("\n" + "🏠" * 10 + f" [DEBUG STEP: {env.common_step_counter}] body check " + "🏠" * 10)
-        print(f"Base Height: {base_height[0].item():.3f} | Gravity_B: {projected_gravity[0].cpu().numpy().round(2)}")
-        print(f"Lin Vel (v_B):     {lin_vel[0].cpu().numpy().round(3)}")
+        print(f"Base Height: {base_height_dbg[0].item():.3f} | Gravity_B: {projected_gravity[0].cpu().numpy().round(2)}")
+        print(f"Lin Vel (v_B):     {lin_vel_dbg[0].cpu().numpy().round(3)}")
         print("[contact_foot_ids (FR,FL,RR,RL)]", contact_foot_ids)
         print("[contact_foot_names]", [contact_sensor.body_names[i] for i in contact_foot_ids])
         print(f"Joint Names in Sim: {robot.data.joint_names}")
@@ -579,7 +578,6 @@ def robot_state_s(
     # 9) unpack gait_info
     # =========================================================
     g_reshaped = gait_info.view(-1, 4, 4)
-    # vel_cmd = env.command_manager.get_command("base_velocity")
     vel_cmd = gait_conditioned_base_velocity(
         env,
         command_name="base_velocity",
@@ -593,22 +591,19 @@ def robot_state_s(
     refFootZ = g_reshaped[:, :, 3]
 
     # =========================================================
-    # 10) final obs
+    # 10) final obs (53)
     # =========================================================
-    obs_56 = torch.cat([
+    obs_53 = torch.cat([
         projected_gravity,  # 3
         joint_pos,          # 12
         ang_vel,            # 3
         joint_vel,          # 12
-        lin_vel,            # 3
         vel_cmd,            # 3
-        #joint_torques,      # 12
         foot_contact,       # 4
-        #base_height,        # 1
         desFeetContact,     # 4
         refFootZ,           # 4
         refFootX,           # 4
-        refFootY            # 4
+        refFootY,           # 4
     ], dim=-1)
 
-    return obs_56
+    return obs_53
