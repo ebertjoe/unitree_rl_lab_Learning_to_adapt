@@ -386,7 +386,7 @@ class RewardsCfg:
     # Eq.(9) - r_stab will read env.beta_* references
     stability = RewTerm(
         func=mdp.r_stab,
-        weight=-6.0,
+        weight=-10.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
