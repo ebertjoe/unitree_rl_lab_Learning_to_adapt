@@ -363,7 +363,7 @@ class RewardsCfg:
     # Eq.(7)
     vcmd_tracking = RewTerm(
         func=mdp.r_vcmd,
-        weight=8.0,
+        weight=15.0,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
@@ -374,7 +374,7 @@ class RewardsCfg:
     # Eq.(8) - r_f will read env.beta_* references
     gait_tracking = RewTerm(
         func=mdp.r_f,
-        weight=-15.0,
+        weight=-10.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -386,7 +386,7 @@ class RewardsCfg:
     # Eq.(9) - r_stab will read env.beta_* references
     stability = RewTerm(
         func=mdp.r_stab,
-        weight=-10.0,
+        weight=-5.0,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -399,29 +399,29 @@ class RewardsCfg:
         },
     )
 
-    # body_height = RewTerm(
-    #     func=mdp.base_height_l2,
-    #     weight=-1.5,
-    #     params={
-    #         "target_height": 0.32,
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #     },
-    # )
+    body_height = RewTerm(
+        func=mdp.base_height_l2,
+        weight=-2.5,
+        params={
+            "target_height": 0.32,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
 
-    # foot_trajectory = RewTerm(
-    #     func=mdp.foot_trajectory_tracking,
-    #     weight=-6.0,
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces",
-    #             body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
-    #         ),
-    #         "asset_cfg": SceneEntityCfg(
-    #             "robot",
-    #             body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
-    #         ),
-    #     },
-    # )
+    foot_trajectory = RewTerm(
+        func=mdp.foot_trajectory_tracking,
+        weight=-1.3,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
+            ),
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=["FR_foot", "FL_foot", "RR_foot", "RL_foot"],
+            ),
+        },
+    )
 
     # gait_symmetry = RewTerm(
     #     func=mdp.gait_conditioned_symmetry,
