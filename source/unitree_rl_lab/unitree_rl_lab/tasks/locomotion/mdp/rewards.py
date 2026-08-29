@@ -139,7 +139,7 @@ def r_vcmd(
     v_cmd2[:, 2] = v_cmd2[:, 2] * wz_scale
 
     err2 = torch.sum((v - v_cmd2) ** 2, dim=-1)            # ||v - vcmd||^2
-    reward = psi(err2 * 4.0)
+    reward = psi(err2)
 
     # Debug Printing (w_vcmd = 50.0)
     if env.common_step_counter % 200 == 0:
