@@ -139,7 +139,21 @@ def r_vcmd(
     v_cmd2[:, 2] = v_cmd2[:, 2] * wz_scale
 
     err2 = torch.sum((v - v_cmd2) ** 2, dim=-1)            # ||v - vcmd||^2
-    reward = psi(err2)
+    # psi(x) = 1 - tanh(x^2), so the factor enters SQUARED: psi(k*err2) gives
+    # 1 - tanh(k^2 * ||e||^4). With k=1 the kernel is nearly flat where the
+    # policy actually operates - a 0.3 m/s error costs 0.81% of the reward and
+    # the gradient peaks at 0.90 m/s, far above the ~0.3 m/s the policy sits at.
+    #
+    # Measured on the v_B planner at checkpoint 14800 (2026-06-12_12-51-26 vs
+    # 2026-09-02_14-22-00), k=4 gives 16x the gradient at ||e||=0.3 and buys
+    # -43% |e_vx|, -37% |e_vy| and a v_y tracking gain of 0.14 -> 0.48, at the
+    # cost of 6.5 pp mean gait contact accuracy - concentrated almost entirely
+    # in bound (91.3% -> 72.9%, and that run still had BOUND_FRONT_SCALE).
+    #
+    # k=2 is the deliberate middle point: 4x the gradient (25% of k=4's), which
+    # extrapolates to roughly 82-85% bound accuracy. Bracket with k=4 if the
+    # velocity gain matters more than uniform gait fidelity.
+    reward = psi(err2 * 8.0)
 
     # Debug Printing (w_vcmd = 50.0)
     if env.common_step_counter % 200 == 0:
@@ -321,7 +335,10 @@ def r_stab(
     stand_height_term = stand_mask * stand_height_err * 3.0
 
     # return
-    total_stab_error = slip_term + omega_term + orient_term + height_term + hip_term + stand_height_term
+    total_stab_error = (
+        slip_term + omega_term + orient_term + height_term + hip_term
+        + stand_height_term
+    )
 
     # debug (w_stab = -1.0)
     if env.common_step_counter % 200 == 0:

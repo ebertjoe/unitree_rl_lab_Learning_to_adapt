@@ -343,6 +343,10 @@ def main():
     if version("rsl-rl-lib").startswith("2.3."):
         obs, _ = env.get_observations()
 
+    # Force trot gait (id 1) for all environments, and prevent it from being resampled.
+    TROT_GAIT_ID = 1
+    env.unwrapped.command_manager._terms["gait_id"].value_command[:] = float(TROT_GAIT_ID)
+
     # -------------------------
     # logging setup
     # -------------------------
@@ -432,6 +436,9 @@ def main():
             actions = policy(obs)
             obs, _, _, _ = env.step(actions)
             sim_step_count += 1
+
+            # Keep forcing trot gait in case episode resets resample gait_id.
+            env.unwrapped.command_manager._terms["gait_id"].value_command[:] = float(TROT_GAIT_ID)
 
             # --- Added: Get and print gait ID ---
             # Retrieve the gait_id of all current environments from CommandManager.

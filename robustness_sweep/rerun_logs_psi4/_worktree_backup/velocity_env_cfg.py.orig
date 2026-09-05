@@ -362,10 +362,7 @@ class RewardsCfg:
     # Eq.(7)
     vcmd_tracking = RewTerm(
         func=mdp.r_vcmd,
-        # 15.0, not 17.5: the sharpened psi(err2*4.0) kernel already raises the
-        # velocity gradient 16x, and 15.0 is the weight the run that validated
-        # it (2026-06-12_12-51-26) actually used.
-        weight=15.0,
+        weight=17.5,
         params={
             "command_name": "base_velocity",
             "asset_cfg": SceneEntityCfg("robot"),
